@@ -394,6 +394,44 @@ func TestMarkSessionDeleted(t *testing.T) {
 	}
 }
 
+func TestDeleteCapture(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC()
+
+	st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-1",
+		CallID:          "call-1",
+		Agent:           "grep",
+		Description:     "test1",
+		Content:         "content1",
+		CapturedAt:      now,
+	})
+	st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-1",
+		CallID:          "call-2",
+		Agent:           "explore",
+		Description:     "test2",
+		Content:         "content2",
+		CapturedAt:      now,
+	})
+
+	err := st.DeleteCapture("ses-1", 1)
+	if err != nil {
+		t.Fatalf("DeleteCapture: %v", err)
+	}
+
+	all, err := st.ListCaptures("ses-1", "")
+	if err != nil {
+		t.Fatalf("ListCaptures: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 capture after delete, got %d", len(all))
+	}
+	if all[0].Seq != 2 {
+		t.Fatalf("expected capture seq 2 to remain, got %d", all[0].Seq)
+	}
+}
+
 func TestListCapturesFiltersByAgent(t *testing.T) {
 	st := openTestStore(t)
 	now := time.Now().UTC()

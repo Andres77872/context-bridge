@@ -212,7 +212,11 @@ func (m Model) viewSessionsPane(w, h int) string {
 
 			id := truncateID(session.ID, idAvailable)
 
-			idCol := lipgloss.NewStyle().Width(idAvailable).Render(id)
+			idStyle := lipgloss.NewStyle().Width(idAvailable)
+			if session.DeletedAt != nil {
+				idStyle = idStyle.Strikethrough(true).Foreground(colorMuted)
+			}
+			idCol := idStyle.Render(id)
 			metaCol := lipgloss.NewStyle().Width(metaWidth).Align(lipgloss.Right).Render(meta)
 
 			lineText := lipgloss.JoinHorizontal(lipgloss.Left, idCol, " ", metaCol)
@@ -237,7 +241,7 @@ func (m Model) viewSessionsPane(w, h int) string {
 		style = activePaneStyle
 	}
 
-	header := titleStyle.Render(" Sessions") + "\n" + dimStyle.Render("Press / to search") + "\n"
+	header := titleStyle.Render(" Sessions") + "\n" + dimStyle.Render("Press x to delete") + "\n"
 
 	return style.Width(w - 2).Height(innerH).Render(
 		header + strings.Join(lines, "\n"),
@@ -407,7 +411,7 @@ func (m Model) viewSession(w, innerH int) string {
 	if m.filterActive {
 		lines = append(lines, helpStyle.Render("  type to filter  ·  enter confirm  ·  esc clear filter"))
 	} else if m.focus == FocusCaptures {
-		lines = append(lines, helpStyle.Render("  j/k move  ·  enter open  ·  / filter  ·  s full-text search  ·  esc back"))
+		lines = append(lines, helpStyle.Render("  j/k move  ·  enter open  ·  / filter  ·  s full-text search  ·  x delete  ·  esc back"))
 	}
 	return strings.Join(lines, "\n")
 }

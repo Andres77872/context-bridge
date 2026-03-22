@@ -367,6 +367,82 @@ func TestConfirmEscClosesDialog(t *testing.T) {
 	}
 }
 
+func TestConfirmDeleteSessionAction(t *testing.T) {
+	st := openTestStore(t)
+	seedSession(t, st, "ses_delete", []seedCapture{{seq: 1, agent: "grep", desc: "test", content: "hello"}})
+
+	m := New(st)
+	m.activeTab = TabSessions
+	m.focus = FocusSessions
+	m.dashboardSessions = []store.SessionSummary{{ID: "ses_delete"}}
+	m.dashboardCursor = 0
+
+	// trigger delete
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	model := updated.(Model)
+	if !model.confirmActive || model.confirmAction != confirmDeleteSession {
+		t.Fatalf("expected confirmDeleteSession active, got %v", model.confirmAction)
+	}
+
+	// confirm
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+
+	if model.confirmActive {
+		t.Fatal("expected confirmActive=false after pressing y")
+	}
+	if cmd == nil {
+		t.Fatal("expected reload command after deletion")
+	}
+
+	// verify soft deletion
+	sessions, _ := st.ListRootSessions(10)
+	if len(sessions) != 1 || sessions[0].DeletedAt == nil {
+		t.Fatalf("expected session to be marked deleted")
+	}
+}
+
+func TestConfirmDeleteCaptureAction(t *testing.T) {
+	st := openTestStore(t)
+	seedSession(t, st, "ses_delete_cap", []seedCapture{
+		{seq: 1, agent: "grep", desc: "test 1", content: "hello"},
+		{seq: 2, agent: "explore", desc: "test 2", content: "world"},
+	})
+
+	m := New(st)
+	m.activeTab = TabSessions
+	m.focus = FocusCaptures
+	m.sessionCaptures = []store.CaptureRecord{
+		{SessionID: "ses_delete_cap", Seq: 1},
+		{SessionID: "ses_delete_cap", Seq: 2},
+	}
+	m.sessionCursor = 0
+
+	// trigger delete
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	model := updated.(Model)
+	if !model.confirmActive || model.confirmAction != confirmDeleteCapture {
+		t.Fatalf("expected confirmDeleteCapture active, got %v", model.confirmAction)
+	}
+
+	// confirm
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+
+	if model.confirmActive {
+		t.Fatal("expected confirmActive=false after pressing y")
+	}
+	if cmd == nil {
+		t.Fatal("expected reload command after deletion")
+	}
+
+	// verify deletion from store
+	captures, _ := st.ListCaptures("ses_delete_cap", "")
+	if len(captures) != 1 || captures[0].Seq != 2 {
+		t.Fatalf("expected capture 1 to be deleted, got %d captures", len(captures))
+	}
+}
+
 // ---- Stats loading ----
 
 func TestStatsLoadedUpdatesModel(t *testing.T) {

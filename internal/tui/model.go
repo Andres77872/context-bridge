@@ -47,7 +47,11 @@ const (
 // confirmAction represents the action to perform after confirmation.
 type confirmAction int
 
-const confirmNone confirmAction = iota
+const (
+	confirmNone confirmAction = iota
+	confirmDeleteSession
+	confirmDeleteCapture
+)
 
 // Model is the root Bubble Tea model for the TUI.
 type Model struct {
@@ -55,10 +59,11 @@ type Model struct {
 
 	activeTab Tab
 
-	focus        FocusPane
-	rightPanel   RightPanel
-	prevPanel    RightPanel
-	searchOrigin RightPanel
+	focus           FocusPane
+	rightPanel      RightPanel
+	prevPanel       RightPanel
+	searchOrigin    RightPanel
+	searchOriginFoc FocusPane
 
 	width  int
 	height int
@@ -167,6 +172,7 @@ func New(st *store.Store) Model {
 		rightPanel:      PanelCaptures,
 		prevPanel:       PanelCaptures,
 		searchOrigin:    PanelCaptures,
+		searchOriginFoc: FocusCaptures,
 		searchInput:     searchInput,
 		filterInput:     filterInput,
 		spinner:         sp,

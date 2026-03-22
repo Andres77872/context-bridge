@@ -314,6 +314,16 @@ func (s *Store) ImportCapture(rootSessionID string, input CaptureInput, seq int,
 	return record, nil
 }
 
+func (s *Store) DeleteCapture(sessionID string, seq int) error {
+	rootID, err := s.ResolveRoot(sessionID)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(`DELETE FROM captures WHERE session_id = ? AND seq = ?`, rootID, seq)
+	return err
+}
+
 func (s *Store) ListCaptures(sessionID, agent string) ([]CaptureRecord, error) {
 	rootID, err := s.ResolveRoot(sessionID)
 	if err != nil {

@@ -8,6 +8,37 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func (m *Model) switchTab(t Tab) {
+	if m.activeTab == t {
+		return
+	}
+	m.activeTab = t
+
+	if t == TabSearch && m.rightPanel != PanelSearch && m.rightPanel != PanelSearchResults {
+		if m.selectedSession != "" {
+			m.searchOrigin = m.rightPanel
+			m.searchOriginFoc = m.focus
+			m.searchScope = m.selectedSession
+			m.rightPanel = PanelSearch
+			m.focus = FocusSearch
+			m.searchErr = ""
+			m.searchInput.Focus()
+			if strings.TrimSpace(m.searchQuery) == "" {
+				m.searchInput.SetValue("")
+			} else {
+				m.searchInput.SetValue(m.searchQuery)
+			}
+			m.searchInput.CursorEnd()
+		} else {
+			m.focus = FocusSessions
+		}
+	} else if t == TabSessions && (m.rightPanel == PanelSearch || m.rightPanel == PanelSearchResults) {
+		m.rightPanel = m.searchOrigin
+		m.focus = m.searchOriginFoc
+		m.searchInput.Blur()
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -199,24 +230,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if key.String() == "tab" {
 		if m.activeTab == TabOverview {
-			m.activeTab = TabSessions
+			m.switchTab(TabSessions)
 		} else if m.activeTab == TabSessions {
-			m.activeTab = TabSearch
+			m.switchTab(TabSearch)
 		} else {
-			m.activeTab = TabOverview
+			m.switchTab(TabOverview)
 		}
 		return m, nil
 	}
 	if key.String() == "1" {
-		m.activeTab = TabOverview
+		m.switchTab(TabOverview)
 		return m, nil
 	}
 	if key.String() == "2" {
-		m.activeTab = TabSessions
+		m.switchTab(TabSessions)
 		return m, nil
 	}
 	if key.String() == "3" {
-		m.activeTab = TabSearch
+		m.switchTab(TabSearch)
 		return m, nil
 	}
 
@@ -300,6 +331,14 @@ func (m Model) updateDashboardKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(loadSessionCmd(m.store, selected.ID), m.spinner.Tick)
 	case "s":
 		return m.openSearchFromCurrentSelection()
+	case "x", "delete":
+		selected := m.selectedDashboardSession()
+		if selected != nil {
+			m.confirmActive = true
+			m.confirmAction = confirmDeleteSession
+			m.confirmMsg = fmt.Sprintf("Delete session %s?", truncateID(selected.ID, 12))
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -316,14 +355,11 @@ func (m Model) updateSessionKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch key.String() {
 	case "q", "esc", "left", "h":
-		if m.filterQuery != "" {
-			m.filterQuery = ""
-			m.sessionCursor = 0
-			m.sessionScroll = 0
+		if m.filterQuery != "" || m.filterActive {
+			m.deactivateFilter()
 			return m, nil
 		}
 		m.focus = FocusSessions
-		m.deactivateFilter()
 		return m, nil
 	case "down", "j":
 		m.sessionCursor = moveCursor(m.sessionCursor, 1, total)
@@ -345,6 +381,14 @@ func (m Model) updateSessionKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "s":
 		return m.openSearchFromCurrentSelection()
+	case "x", "delete":
+		selected := m.selectedSessionCaptureFromFiltered(visible)
+		if selected != nil {
+			m.confirmActive = true
+			m.confirmAction = confirmDeleteCapture
+			m.confirmMsg = fmt.Sprintf("Delete output #%d?", selected.Seq)
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -385,7 +429,7 @@ func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = FocusSessions
 		} else {
 			m.rightPanel = m.searchOrigin
-			m.focus = m.focusFromRightPanel()
+			m.focus = m.searchOriginFoc
 		}
 		m.searchErr = ""
 		m.searchInput.Blur()
@@ -414,7 +458,7 @@ func (m Model) updateSearchKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = FocusSessions
 		} else {
 			m.rightPanel = m.searchOrigin
-			m.focus = m.focusFromRightPanel()
+			m.focus = m.searchOriginFoc
 		}
 		m.searchErr = ""
 		m.searchInput.Blur()
@@ -434,6 +478,7 @@ func (m Model) handleFilterInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		m.filterInput.Blur()
+		m.filterActive = false
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -453,12 +498,13 @@ func (m Model) updateSearchResultsKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "q", "esc", "left", "h":
 		m.rightPanel = m.searchOrigin
-		m.focus = m.focusFromRightPanel()
+		m.focus = m.searchOriginFoc
 		return m, nil
 	case "s":
 		m.rightPanel = PanelSearch
 		m.focus = FocusSearch
 		m.searchOrigin = PanelSearchResults
+		m.searchOriginFoc = FocusSearchResults
 		m.searchInput.Focus()
 		m.searchInput.SetValue(m.searchQuery)
 		m.searchInput.CursorEnd()
@@ -488,10 +534,42 @@ func (m Model) handleConfirmKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.confirmAction {
+	case confirmDeleteSession:
+		selected := m.selectedDashboardSession()
+		if selected != nil {
+			err := m.store.MarkSessionDeleted(selected.ID)
+			if err != nil {
+				m.setError(err)
+			} else {
+				m.setStatus("Session deleted")
+				if m.selectedSession == selected.ID {
+					m.selectedSession = ""
+					m.rightPanel = PanelCaptures
+					m.focus = FocusSessions
+					m.sessionCaptures = nil
+				}
+				cmd = tea.Batch(loadDashboardCmd(m.store), loadStatsCmd(m.store))
+			}
+		}
+	case confirmDeleteCapture:
+		selected := m.selectedSessionCaptureFromFiltered(m.filteredCaptures())
+		if selected != nil {
+			err := m.store.DeleteCapture(selected.SessionID, selected.Seq)
+			if err != nil {
+				m.setError(err)
+			} else {
+				m.setStatus(fmt.Sprintf("Deleted output #%d", selected.Seq))
+				cmd = tea.Batch(loadSessionCmd(m.store, selected.SessionID), loadStatsCmd(m.store))
+			}
+		}
+	}
+
 	m.confirmActive = false
 	m.confirmMsg = ""
 	m.confirmAction = confirmNone
-	return m, nil
+	return m, cmd
 }
 
 // --- Search open helper ---
@@ -499,11 +577,13 @@ func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
 func (m Model) openSearchFromCurrentSelection() (tea.Model, tea.Cmd) {
 	scope := m.selectedSession
 	origin := m.rightPanel
+	originFoc := m.focus
 
 	if scope == "" {
 		if selected := m.selectedDashboardSession(); selected != nil {
 			scope = selected.ID
 			origin = PanelCaptures
+			originFoc = FocusSessions
 		}
 	}
 
@@ -514,6 +594,7 @@ func (m Model) openSearchFromCurrentSelection() (tea.Model, tea.Cmd) {
 
 	m.searchScope = scope
 	m.searchOrigin = origin
+	m.searchOriginFoc = originFoc
 	m.rightPanel = PanelSearch
 	m.focus = FocusSearch
 	m.searchErr = ""

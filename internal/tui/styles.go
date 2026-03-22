@@ -30,6 +30,7 @@ var (
 	selectedStyle = lipgloss.NewStyle().Foreground(colorBase).Background(colorRose).Bold(true)
 	dimStyle      = lipgloss.NewStyle().Foreground(colorMuted)
 	scrollStyle   = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+	deletedStyle  = lipgloss.NewStyle().Strikethrough(true).Foreground(colorMuted)
 )
 
 // Tab styles

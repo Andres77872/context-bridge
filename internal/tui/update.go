@@ -573,7 +573,7 @@ func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
 				m.setError(err)
 			} else {
 				m.setStatus(fmt.Sprintf("Deleted output #%d", selected.Seq))
-				cmd = tea.Batch(loadSessionCmd(m.store, selected.SessionID), loadStatsCmd(m.store))
+				cmd = tea.Batch(loadSessionCmd(m.store, selected.SessionID), loadDashboardCmd(m.store), loadStatsCmd(m.store))
 			}
 		}
 	}

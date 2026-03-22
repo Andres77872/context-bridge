@@ -323,19 +323,35 @@ func (m *Model) syncComponentSize() {
 
 	m.ready = true
 
-	rightPaneWidth := m.width - 34 - 4 // 34 for left pane + borders/padding. 4 for app padding.
+	rightPaneWidth := m.width - 34 // 34 for left pane + app padding.
 	if rightPaneWidth < 20 {
 		rightPaneWidth = 20
 	}
 
-	inputWidth := rightPaneWidth - 4
+	// Inner width of right pane is rightPaneWidth - 4 (due to borders + padding).
+	innerWidth := rightPaneWidth - 4
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+
+	// For the search input inside a panel, the panel adds 4.
+	// So to fit in innerWidth, input itself must be innerWidth - 4.
+	inputWidth := innerWidth - 4
 	if inputWidth < 20 {
 		inputWidth = 20
 	}
 	m.searchInput.Width = inputWidth
-	m.filterInput.Width = inputWidth
 
-	vpWidth := rightPaneWidth - 6 // rightPane border/padding(4) + contentStyle padding(2)
+	// filterInput is prepended with "/ " (2 chars), so it can take innerWidth - 2.
+	filterWidth := innerWidth - 2
+	if filterWidth < 20 {
+		filterWidth = 20
+	}
+	m.filterInput.Width = filterWidth
+
+	// viewports are rendered inside contentStyle which has padding 1 (adds 2 to width).
+	// So vpWidth must be innerWidth - 2 to fit inside the pane.
+	vpWidth := innerWidth - 2
 	if vpWidth < 20 {
 		vpWidth = 20
 	}

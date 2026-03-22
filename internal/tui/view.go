@@ -103,7 +103,7 @@ func (m Model) viewOverviewTab(w, h int) string {
 
 func (m Model) viewSearchTab(w, h int) string {
 	leftW := 30
-	rightW := w - leftW - 2
+	rightW := w - leftW
 	if rightW < 20 {
 		rightW = 20
 	}
@@ -134,7 +134,7 @@ func (m Model) viewSearchTab(w, h int) string {
 		style = activePaneStyle
 	}
 
-	rightPane := style.Width(rightW).Height(innerH).Render(rightPaneContent)
+	rightPane := style.Width(rightW - 2).Height(innerH).Render(rightPaneContent)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 }
@@ -159,7 +159,7 @@ func (m Model) viewEmptySearchState() string {
 
 func (m Model) viewSessionsTab(w, h int) string {
 	leftW := 30
-	rightW := w - leftW - 2 // 2 for spacing/borders between panes
+	rightW := w - leftW
 	if rightW < 20 {
 		rightW = 20
 	}
@@ -197,18 +197,31 @@ func (m Model) viewSessionsPane(w, h int) string {
 
 		for i := scroll; i < end; i++ {
 			session := m.dashboardSessions[i]
-			id := truncateID(session.ID, 12)
 			ts := formatSessionTime(session)
+			meta := metaStyle.Render(ts)
+			metaWidth := lipgloss.Width(ts)
 
-			line := fmt.Sprintf("%-12s %s", id, metaStyle.Render(ts))
+			// w is outer width. inner text is w - 4. prefix is 2.
+			// remaining for id and spacing is (w - 4) - 2 - metaWidth = w - 6 - metaWidth
+			idAvailable := (w - 4) - 2 - metaWidth - 1 // 1 for spacing
+			if idAvailable < 5 {
+				idAvailable = 5
+			}
+
+			id := truncateID(session.ID, idAvailable)
+
+			idCol := lipgloss.NewStyle().Width(idAvailable).Render(id)
+			metaCol := lipgloss.NewStyle().Width(metaWidth).Align(lipgloss.Right).Render(meta)
+
+			lineText := lipgloss.JoinHorizontal(lipgloss.Left, idCol, " ", metaCol)
 
 			if i == m.dashboardCursor {
-				lines = append(lines, selectedStyle.Render("▸ "+line))
+				lines = append(lines, selectedStyle.Render("▸ "+lineText))
 			} else {
 				if session.ID == m.selectedSession {
-					line = lipgloss.NewStyle().Foreground(colorRose).Render(line)
+					lineText = lipgloss.NewStyle().Foreground(colorRose).Render(lineText)
 				}
-				lines = append(lines, "  "+line)
+				lines = append(lines, "  "+lineText)
 			}
 		}
 
@@ -224,7 +237,7 @@ func (m Model) viewSessionsPane(w, h int) string {
 
 	header := titleStyle.Render(" Sessions") + "\n" + dimStyle.Render("Press / to search") + "\n"
 
-	return style.Width(w).Height(innerH).Render(
+	return style.Width(w - 2).Height(innerH).Render(
 		header + strings.Join(lines, "\n"),
 	)
 }
@@ -260,7 +273,7 @@ func (m Model) viewRightPane(w, h int) string {
 		style = activePaneStyle
 	}
 
-	return style.Width(w).Height(innerH).Render(content)
+	return style.Width(w - 2).Height(innerH).Render(content)
 }
 
 func (m Model) viewEmptySessionState() string {
@@ -331,10 +344,32 @@ func (m Model) viewSession(w, innerH int) string {
 	var items []string
 	for i := scroll; i < end; i++ {
 		c := visible[i]
+
+		seqStr := dimStyle.Render(fmt.Sprintf("#%-3d", c.Seq))
+		seqCol := lipgloss.NewStyle().Width(5).Render(seqStr)
+
 		badge := agentBadge(c.Agent)
-		desc := truncateLine(c.Description, 50)
-		meta := metaStyle.Render(fmt.Sprintf("%s  %s", store.FormatRelativeTime(c.CapturedAt), store.FormatBytes(c.Bytes)))
-		line := fmt.Sprintf("#%-3d %s  %s  %s", c.Seq, badge, desc, meta)
+		badgeCol := lipgloss.NewStyle().Width(12).Render(badge)
+
+		timeStr := store.FormatRelativeTime(c.CapturedAt)
+		bytesStr := store.FormatBytes(c.Bytes)
+		metaText := fmt.Sprintf("%s  %s", timeStr, bytesStr)
+		if c.ChildSessionID != "" {
+			metaText = "↱ subsession  " + metaText
+		}
+		meta := metaStyle.Render(metaText)
+		metaWidth := lipgloss.Width(metaText)
+		metaCol := lipgloss.NewStyle().Width(metaWidth).Align(lipgloss.Right).Render(meta)
+
+		descAvailable := (w - 4) - 21 - metaWidth
+		if descAvailable < 10 {
+			descAvailable = 10
+		}
+		descText := truncateLine(c.Description, descAvailable)
+		descCol := lipgloss.NewStyle().Width(descAvailable).Render(descText)
+
+		line := lipgloss.JoinHorizontal(lipgloss.Left, seqCol, badgeCol, descCol, "  ", metaCol)
+
 		if i == m.sessionCursor && m.focus == FocusCaptures {
 			items = append(items, selectedStyle.Render("▸ "+line))
 		} else if i == m.sessionCursor {
@@ -361,8 +396,8 @@ func (m Model) viewSession(w, innerH int) string {
 			previewText = strings.TrimSpace(selected.Content)
 		}
 		if previewText != "" {
-			previewLine := truncateLine(previewText, w-4)
-			lines = append(lines, panelStyle.Width(w).Render(dimStyle.Render(previewLine)))
+			previewLine := truncateLine(previewText, w-8)
+			lines = append(lines, panelStyle.Width(w-6).Render(dimStyle.Render(previewLine)))
 			lines = append(lines, "")
 		}
 	}
@@ -389,7 +424,7 @@ func (m Model) viewCapture(w, innerH int) string {
 		m.selectedCapture.CapturedAt.Format("2006-01-02 15:04 UTC"),
 	)))
 	if desc := strings.TrimSpace(m.selectedCapture.Description); desc != "" {
-		headerLines = append(headerLines, dimStyle.Render(desc))
+		headerLines = append(headerLines, dimStyle.Render(truncateLine(desc, w-4)))
 	}
 	header := strings.Join(headerLines, "\n")
 
@@ -418,12 +453,15 @@ func (m Model) viewCapture(w, innerH int) string {
 func (m Model) viewSearch(w, innerH int) string {
 	var parts []string
 	parts = append(parts, titleStyle.Render("Full-Text Search"))
-	parts = append(parts, metaStyle.Render("Session: "+truncateID(m.searchScope, 12)))
+
+	sessionText := "Session: " + truncateID(m.searchScope, 12)
+	parts = append(parts, metaStyle.Render(truncateLine(sessionText, w-4)))
+
 	parts = append(parts, "")
-	parts = append(parts, panelStyle.Render(m.searchInput.View()))
+	parts = append(parts, panelStyle.Width(w-6).Render(m.searchInput.View()))
 	parts = append(parts, "")
 	if m.searchErr != "" {
-		parts = append(parts, errorStyle.Render(m.searchErr))
+		parts = append(parts, errorStyle.Render(truncateLine(m.searchErr, w-4)))
 		parts = append(parts, "")
 	}
 	parts = append(parts, helpStyle.Render("  type query  ·  enter search  ·  esc cancel"))
@@ -432,8 +470,13 @@ func (m Model) viewSearch(w, innerH int) string {
 
 func (m Model) viewSearchResults(w, innerH int) string {
 	var header []string
-	header = append(header, titleStyle.Render(fmt.Sprintf("Raw MCP Search Results for %q", m.searchQuery)))
-	header = append(header, metaStyle.Render(fmt.Sprintf("Session: %s", truncateID(m.searchScope, 12))))
+
+	// Truncate to fit inside the pane (inner width is w - 4)
+	titleText := fmt.Sprintf("Raw MCP Search Results for %q", m.searchQuery)
+	header = append(header, titleStyle.Render(truncateLine(titleText, w-4)))
+
+	sessionText := fmt.Sprintf("Session: %s", truncateID(m.searchScope, 12))
+	header = append(header, metaStyle.Render(truncateLine(sessionText, w-4)))
 	header = append(header, "")
 
 	body := m.contentViewport.View()

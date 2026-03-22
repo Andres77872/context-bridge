@@ -91,10 +91,12 @@ func (m Model) viewOverviewTab(w, h int) string {
 
 	if len(m.dashboardSessions) == 0 {
 		lines = append(lines, dimStyle.Render("No sessions captured yet.\nRun `context-bridge serve` and start an OpenCode session."))
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("  i install plugin  ·  q quit"))
 	} else {
 		lines = append(lines, dimStyle.Render("Press Tab to view sessions and their outputs."))
 		lines = append(lines, "")
-		lines = append(lines, helpStyle.Render("  tab/1/2 switch view  ·  q quit"))
+		lines = append(lines, helpStyle.Render("  tab/1/2 switch view  ·  i install plugin  ·  q quit"))
 	}
 
 	content := strings.Join(lines, "\n")

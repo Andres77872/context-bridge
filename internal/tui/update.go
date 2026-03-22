@@ -73,6 +73,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case pluginInstalledMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+		} else {
+			m.setStatus(fmt.Sprintf("Plugin installed successfully to %s", msg.path))
+		}
+		return m, nil
+
 	case searchLoadedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -229,6 +237,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key.String() {
 		case "q":
 			return m, tea.Quit
+		case "i":
+			return m, installPluginCmd()
 		}
 	}
 

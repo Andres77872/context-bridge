@@ -36,6 +36,8 @@ func (m Model) View() string {
 	var body string
 	if m.activeTab == TabOverview {
 		body = m.viewOverviewTab(bodyWidth, bodyHeight)
+	} else if m.activeTab == TabSearch {
+		body = m.viewSearchTab(bodyWidth, bodyHeight)
 	} else {
 		body = m.viewSessionsTab(bodyWidth, bodyHeight)
 	}
@@ -56,8 +58,8 @@ func (m Model) View() string {
 func (m Model) renderTabs() string {
 	var tabs []string
 
-	for i, name := range []string{"Overview", "Sessions"} {
-		isActive := (m.activeTab == TabOverview && i == 0) || (m.activeTab == TabSessions && i == 1)
+	for i, name := range []string{"Overview", "Sessions", "Search"} {
+		isActive := (m.activeTab == TabOverview && i == 0) || (m.activeTab == TabSessions && i == 1) || (m.activeTab == TabSearch && i == 2)
 		style := tabStyle
 		if isActive {
 			style = activeTabStyle
@@ -97,6 +99,62 @@ func (m Model) viewOverviewTab(w, h int) string {
 
 	content := strings.Join(lines, "\n")
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
+}
+
+func (m Model) viewSearchTab(w, h int) string {
+	leftW := 30
+	rightW := w - leftW - 2
+	if rightW < 20 {
+		rightW = 20
+	}
+
+	leftPane := m.viewSessionsPane(leftW, h)
+
+	var rightPaneContent string
+	innerH := h - 2
+	if innerH < 3 {
+		innerH = 3
+	}
+
+	if m.selectedSession == "" {
+		rightPaneContent = m.viewEmptySearchState()
+	} else {
+		switch m.rightPanel {
+		case PanelCaptureDetail:
+			rightPaneContent = m.viewCapture(rightW, innerH)
+		case PanelSearchResults:
+			rightPaneContent = m.viewSearchResults(rightW, innerH)
+		default:
+			rightPaneContent = m.viewSearch(rightW, innerH)
+		}
+	}
+
+	style := paneStyle
+	if m.focus != FocusSessions {
+		style = activePaneStyle
+	}
+
+	rightPane := style.Width(rightW).Height(innerH).Render(rightPaneContent)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+}
+
+func (m Model) viewEmptySearchState() string {
+	var lines []string
+
+	lines = append(lines, "")
+	lines = append(lines, titleStyle.Render("Search Session Context"))
+	lines = append(lines, "")
+
+	if len(m.dashboardSessions) == 0 {
+		lines = append(lines, dimStyle.Render("No sessions available to search."))
+	} else {
+		lines = append(lines, dimStyle.Render("Select a session from the left menu to start searching."))
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("  ↑/↓ move  ·  enter start searching"))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) viewSessionsTab(w, h int) string {
@@ -374,72 +432,30 @@ func (m Model) viewSearch(w, innerH int) string {
 
 func (m Model) viewSearchResults(w, innerH int) string {
 	var header []string
-	header = append(header, titleStyle.Render(fmt.Sprintf("Search Results for %q", m.searchQuery)))
+	header = append(header, titleStyle.Render(fmt.Sprintf("Raw MCP Search Results for %q", m.searchQuery)))
 	header = append(header, metaStyle.Render(fmt.Sprintf("Session: %s", truncateID(m.searchScope, 12))))
 	header = append(header, "")
 
-	if len(m.searchResults) == 0 {
-		header = append(header, dimStyle.Render(fmt.Sprintf("No matches for %q.\nTry a different term or esc to go back.", m.searchQuery)))
-		header = append(header, "")
-		header = append(header, helpStyle.Render("  esc back  ·  / edit search"))
-		return strings.Join(header, "\n")
+	body := m.contentViewport.View()
+	if strings.TrimSpace(body) == "" {
+		body = dimStyle.Render("No content")
 	}
+	contentBox := contentStyle.Render(body)
 
-	// fixed elements inside pane: header(3) + status/help/scroll(4) = 7
-	visibleCount := innerH - 7
-	if visibleCount < 3 {
-		visibleCount = 3
-	}
-
-	total := len(m.searchResults)
-	scroll := m.searchResultsScroll
-	end := scroll + visibleCount
-	if end > total {
-		end = total
-	}
-
-	var items []string
-	for i := scroll; i < end; i++ {
-		r := m.searchResults[i]
-		badge := agentBadge(r.Capture.Agent)
-		desc := truncateLine(r.Capture.Description, 50)
-		matches := dimStyle.Render(fmt.Sprintf("(%d match)", r.MatchCount))
-		if r.MatchCount != 1 {
-			matches = dimStyle.Render(fmt.Sprintf("(%d matches)", r.MatchCount))
-		}
-		line := fmt.Sprintf("#%-3d %s  %s  %s", r.Capture.Seq, badge, desc, matches)
-		if i == m.searchCursor && m.focus == FocusSearchResults {
-			items = append(items, selectedStyle.Render("▸ "+line))
-		} else if i == m.searchCursor {
-			items = append(items, "▸ "+line)
-		} else {
-			items = append(items, "  "+line)
-		}
-	}
-	header = append(header, strings.Join(items, "\n"))
-	header = append(header, "")
-
-	if total > visibleCount {
-		indicator := scrollStyle.Render(fmt.Sprintf("  showing %d–%d of %d", scroll+1, end, total))
-		if end < total {
-			indicator += scrollStyle.Render("  ↓ more")
-		}
-		header = append(header, indicator)
-		header = append(header, "")
-	}
-
-	if selected := m.selectedSearchResult(); selected != nil && strings.TrimSpace(selected.Snippet) != "" {
-		snippet := strings.ReplaceAll(selected.Snippet, ">>>", "«")
-		snippet = strings.ReplaceAll(snippet, "<<<", "»")
-
-		header = append(header, panelStyle.Width(w).Render(truncateLine(snippet, w-4)))
-		header = append(header, "")
-	}
-
+	var footerLines []string
+	scrollPercent := fmt.Sprintf("%3.f%%", m.contentViewport.ScrollPercent()*100)
 	if m.focus == FocusSearchResults {
-		header = append(header, helpStyle.Render("  j/k move  ·  enter open  ·  / refine search  ·  esc back"))
+		footerLines = append(footerLines, helpStyle.Render("  ↑/↓ scroll  ·  pgup/pgdn page  ·  home/end jump  ·  s new search  ·  esc back")+lipgloss.NewStyle().Foreground(colorRose).Render(fmt.Sprintf("   [%s]", scrollPercent)))
+	} else {
+		footerLines = append(footerLines, lipgloss.NewStyle().Foreground(colorSubtle).Render(fmt.Sprintf("   [%s]", scrollPercent)))
 	}
-	return strings.Join(header, "\n")
+	footer := strings.Join(footerLines, "\n")
+
+	parts := []string{strings.Join(header, "\n"), contentBox}
+	if footer != "" {
+		parts = append(parts, footer)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // renderHeader renders the app title and stats breadcrumb in a single line.
@@ -461,7 +477,7 @@ func (m Model) renderStatusBar() string {
 	var parts []string
 
 	// Global key hints
-	parts = append(parts, helpStyle.Render("tab/1/2: switch tab • s: full-text search • ctrl+c: quit"))
+	parts = append(parts, helpStyle.Render("tab/1/2/3: switch tab • s: full-text search • ctrl+c: quit"))
 
 	if m.loading {
 		parts = append(parts, statusStyle.Render(m.spinner.View()+"  Loading…"))

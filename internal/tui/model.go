@@ -20,6 +20,7 @@ type Tab int
 const (
 	TabOverview Tab = iota
 	TabSessions
+	TabSearch
 )
 
 // FocusPane represents the currently focused pane.
@@ -95,6 +96,7 @@ type Model struct {
 	searchInput         textinput.Model
 	searchScope         string
 	searchResults       []store.SearchResult
+	searchRawOutput     string
 	searchCursor        int
 	searchResultsScroll int
 	searchQuery         string
@@ -132,10 +134,12 @@ type captureLoadedMsg struct {
 }
 
 type searchLoadedMsg struct {
-	sessionID string
-	query     string
-	results   []store.SearchResult
-	err       error
+	sessionID     string
+	rootID        string
+	totalCaptures int
+	query         string
+	results       []store.SearchResult
+	err           error
 }
 
 // New initialises the TUI model. The search input starts unfocused; it is
@@ -218,7 +222,22 @@ func loadCaptureCmd(st *store.Store, sessionID string, seq int) tea.Cmd {
 func loadSearchCmd(st *store.Store, sessionID, query string) tea.Cmd {
 	return func() tea.Msg {
 		results, err := st.Search(sessionID, query, 3)
-		return searchLoadedMsg{sessionID: sessionID, query: query, results: results, err: err}
+
+		rootID, rootErr := st.ResolveRoot(sessionID)
+		if rootErr != nil {
+			rootID = sessionID
+		}
+
+		captures, _ := st.ListCaptures(sessionID, "")
+
+		return searchLoadedMsg{
+			sessionID:     sessionID,
+			rootID:        rootID,
+			totalCaptures: len(captures),
+			query:         query,
+			results:       results,
+			err:           err,
+		}
 	}
 }
 
@@ -326,8 +345,11 @@ func (m *Model) syncComponentSize() {
 	}
 	m.contentViewport.Width = vpWidth
 	m.contentViewport.Height = vpHeight
-	if m.selectedCapture != nil {
+	if m.rightPanel == PanelCaptureDetail && m.selectedCapture != nil {
 		wrappedContent := wordwrap.String(m.selectedCapture.Content, vpWidth)
+		m.contentViewport.SetContent(wrappedContent)
+	} else if m.rightPanel == PanelSearchResults && m.searchRawOutput != "" {
+		wrappedContent := wordwrap.String(m.searchRawOutput, vpWidth)
 		m.contentViewport.SetContent(wrappedContent)
 	}
 }

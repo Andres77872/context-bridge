@@ -83,12 +83,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchScope = msg.sessionID
 		m.searchQuery = msg.query
 		m.searchResults = msg.results
+
+		var rawOutput string
+		if len(msg.results) == 0 {
+			rawOutput = fmt.Sprintf("No matches for %q across %d outputs.", msg.query, msg.totalCaptures)
+		} else {
+			var groups []string
+			totalMatches := 0
+			for _, result := range msg.results {
+				totalMatches += result.MatchCount
+				groups = append(groups, strings.Join([]string{
+					fmt.Sprintf("### #%d [%s] %s", result.Capture.Seq, result.Capture.Agent, result.Capture.Description),
+					fmt.Sprintf("%d match(es)", result.MatchCount),
+					"",
+					result.Snippet,
+				}, "\n"))
+			}
+			rawOutput = strings.Join([]string{
+				fmt.Sprintf("## Search: %q", msg.query),
+				"",
+				fmt.Sprintf("%d match(es) across %d outputs.", totalMatches, len(msg.results)),
+				fmt.Sprintf("Use `context_bridge_read` with `session_id=%q` and the output # to read full content.", msg.rootID),
+				"",
+				strings.Join(groups, "\n\n"),
+			}, "\n")
+		}
+
+		m.searchRawOutput = rawOutput
 		m.searchCursor = 0
 		m.searchResultsScroll = 0
 		m.rightPanel = PanelSearchResults
 		m.focus = FocusSearchResults
 		m.searchErr = ""
 		m.setStatus(fmt.Sprintf("Found %d result(s) for %q", len(msg.results), msg.query))
+		m.syncComponentSize()
+		m.contentViewport.GotoTop()
 		return m, nil
 
 	case tea.MouseMsg:
@@ -129,26 +158,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		} else if m.focus == FocusSearchResults {
-			total := len(m.searchResults)
-			visibleCount := (m.height - 10) - 7
-			if visibleCount < 3 {
-				visibleCount = 3
-			}
-			if msg.Type == tea.MouseWheelUp {
-				m.searchCursor = moveCursor(m.searchCursor, -1, total)
-				m.searchResultsScroll = adjustScroll(m.searchCursor, m.searchResultsScroll, visibleCount)
-			} else if msg.Type == tea.MouseWheelDown {
-				m.searchCursor = moveCursor(m.searchCursor, 1, total)
-				m.searchResultsScroll = adjustScroll(m.searchCursor, m.searchResultsScroll, visibleCount)
-			}
-			return m, nil
+			var cmd tea.Cmd
+			m.contentViewport, cmd = m.contentViewport.Update(msg)
+			return m, cmd
 		}
 	}
 
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		var cmd tea.Cmd
-		if m.focus == FocusCaptureDetail && m.activeTab == TabSessions {
+		if (m.focus == FocusCaptureDetail || m.focus == FocusSearchResults) && (m.activeTab == TabSessions || m.activeTab == TabSearch) {
 			m.contentViewport, cmd = m.contentViewport.Update(msg)
 		}
 		return m, cmd
@@ -162,17 +181,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKeys(key)
 	}
 
-	if m.focus == FocusSearch && m.searchInput.Focused() && m.activeTab == TabSessions {
+	if m.focus == FocusSearch && m.searchInput.Focused() && (m.activeTab == TabSessions || m.activeTab == TabSearch) {
 		return m.handleSearchInputKeys(key)
 	}
 
-	if m.filterActive && m.filterInput.Focused() && m.activeTab == TabSessions {
+	if m.filterActive && m.filterInput.Focused() && (m.activeTab == TabSessions || m.activeTab == TabSearch) {
 		return m.handleFilterInputKeys(key)
 	}
 
 	if key.String() == "tab" {
 		if m.activeTab == TabOverview {
 			m.activeTab = TabSessions
+		} else if m.activeTab == TabSessions {
+			m.activeTab = TabSearch
 		} else {
 			m.activeTab = TabOverview
 		}
@@ -186,8 +207,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeTab = TabSessions
 		return m, nil
 	}
+	if key.String() == "3" {
+		m.activeTab = TabSearch
+		return m, nil
+	}
 
-	if m.activeTab == TabSessions {
+	if m.activeTab == TabSessions || m.activeTab == TabSearch {
 		switch m.focus {
 		case FocusSessions:
 			return m.updateDashboardKeys(key)
@@ -253,6 +278,12 @@ func (m Model) updateDashboardKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = m.focusFromRightPanel()
 			return m, nil
 		}
+
+		if m.activeTab == TabSearch {
+			m.selectedSession = selected.ID
+			return m.openSearchFromCurrentSelection()
+		}
+
 		m.loading = true
 		m.prevPanel = PanelCaptures
 		m.selectedSession = selected.ID
@@ -340,8 +371,12 @@ func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchInput.SetValue("")
 			return m, nil
 		}
-		m.rightPanel = m.searchOrigin
-		m.focus = m.focusFromRightPanel()
+		if m.activeTab == TabSearch {
+			m.focus = FocusSessions
+		} else {
+			m.rightPanel = m.searchOrigin
+			m.focus = m.focusFromRightPanel()
+		}
 		m.searchErr = ""
 		m.searchInput.Blur()
 		return m, nil
@@ -365,8 +400,12 @@ func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateSearchKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc", "q":
-		m.rightPanel = m.searchOrigin
-		m.focus = m.focusFromRightPanel()
+		if m.activeTab == TabSearch {
+			m.focus = FocusSessions
+		} else {
+			m.rightPanel = m.searchOrigin
+			m.focus = m.focusFromRightPanel()
+		}
 		m.searchErr = ""
 		m.searchInput.Blur()
 		return m, nil
@@ -398,33 +437,14 @@ func (m Model) handleFilterInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 // --- Search Results ---
 
 func (m Model) updateSearchResultsKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	total := len(m.searchResults)
-	visibleCount := (m.height - 10) - 7
-	if visibleCount < 3 {
-		visibleCount = 3
-	}
+	var vpCmd tea.Cmd
+	m.contentViewport, vpCmd = m.contentViewport.Update(key)
 
 	switch key.String() {
 	case "q", "esc", "left", "h":
 		m.rightPanel = m.searchOrigin
 		m.focus = m.focusFromRightPanel()
 		return m, nil
-	case "down", "j":
-		m.searchCursor = moveCursor(m.searchCursor, 1, total)
-		m.searchResultsScroll = adjustScroll(m.searchCursor, m.searchResultsScroll, visibleCount)
-	case "up", "k":
-		m.searchCursor = moveCursor(m.searchCursor, -1, total)
-		m.searchResultsScroll = adjustScroll(m.searchCursor, m.searchResultsScroll, visibleCount)
-	case "enter", "right", "l":
-		selected := m.selectedSearchResult()
-		if selected == nil {
-			m.setStatus("No result selected")
-			return m, nil
-		}
-		m.loading = true
-		m.prevPanel = PanelSearchResults
-		m.selectedSession = selected.Capture.SessionID
-		return m, tea.Batch(loadCaptureCmd(m.store, selected.Capture.SessionID, selected.Capture.Seq), m.spinner.Tick)
 	case "s":
 		m.rightPanel = PanelSearch
 		m.focus = FocusSearch
@@ -432,8 +452,15 @@ func (m Model) updateSearchResultsKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput.Focus()
 		m.searchInput.SetValue(m.searchQuery)
 		m.searchInput.CursorEnd()
+		return m, nil
+	case "home":
+		m.contentViewport.GotoTop()
+		return m, nil
+	case "end":
+		m.contentViewport.GotoBottom()
+		return m, nil
 	}
-	return m, nil
+	return m, vpCmd
 }
 
 // --- Confirm layer ---

@@ -588,3 +588,31 @@ func TestSearchResultsEmptyStateShowsQuery(t *testing.T) {
 		t.Fatalf("empty search results must show the query, got:\n%s", output)
 	}
 }
+
+func TestViewSearchTabEmptyState(t *testing.T) {
+	m := withDimensions(New(nil), 120, 30)
+	m.activeTab = TabSearch
+	m.selectedSession = ""
+	m.dashboardSessions = []store.SessionSummary{{ID: "dummy"}}
+
+	output := m.viewSearchTab(120, 30)
+	if !strings.Contains(output, "Select a session from the left menu to start searching") {
+		t.Fatalf("expected empty search state instructions, got:\n%s", output)
+	}
+}
+
+func TestViewSearchShowsSearchInput(t *testing.T) {
+	m := withDimensions(New(nil), 120, 30)
+	m.activeTab = TabSearch
+	m.selectedSession = "ses_123"
+	m.rightPanel = PanelSearch
+	m.searchInput.SetValue("test search query")
+
+	output := m.viewSearch(100, 20)
+	if !strings.Contains(output, "test search query") {
+		t.Fatalf("expected search view to show input value, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Full-Text Search") {
+		t.Fatalf("expected search view to show header, got:\n%s", output)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -460,11 +461,40 @@ func (s *Store) Search(sessionID, query string, contextLines int) ([]SearchResul
 		contextLines = 3
 	}
 
-	results, err := s.searchFTS(rootID, query, contextLines)
-	if err == nil && len(results) > 0 {
-		return results, nil
+	// Try compiling as regex. If it fails, fall back to literal case-insensitive match by quoting.
+	re, err := regexp.Compile("(?i)" + query)
+	if err != nil {
+		re = regexp.MustCompile("(?i)" + regexp.QuoteMeta(query))
 	}
-	return s.searchLIKE(rootID, query, contextLines)
+
+	rows, err := s.db.Query(`
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at
+		FROM captures c
+		JOIN sessions ses ON ses.id = c.session_id
+		WHERE c.session_id = ?
+		ORDER BY c.seq ASC
+	`, rootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		record, err := scanCapture(rows, true)
+		if err != nil {
+			return nil, err
+		}
+		snippet, matches := buildSnippet(record.Content, re, contextLines)
+		if matches == 0 {
+			continue
+		}
+		results = append(results, SearchResult{Capture: *record, Snippet: snippet, MatchCount: matches})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 func (s *Store) RenderHint(sessionID string) (string, error) {
@@ -595,70 +625,6 @@ func (s *Store) normalizeCaptureInput(input CaptureInput) (rootID, content, prev
 	content = formatCaptureDocument(rootID, input, capturedAt)
 	bytes = len([]byte(content))
 	return rootID, content, preview, bytes, capturedAt, nil
-}
-
-func (s *Store) searchFTS(rootID, query string, contextLines int) ([]SearchResult, error) {
-	rows, err := s.db.Query(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at
-		FROM captures c
-		JOIN captures_fts ON captures_fts.rowid = c.id
-		JOIN sessions ses ON ses.id = c.session_id
-		WHERE c.session_id = ? AND captures_fts MATCH ?
-		ORDER BY c.seq ASC
-	`, rootID, buildFTSQuery(query))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []SearchResult
-	for rows.Next() {
-		record, err := scanCapture(rows, true)
-		if err != nil {
-			return nil, err
-		}
-		snippet, matches := buildSnippet(record.Content, query, contextLines)
-		if matches == 0 {
-			continue
-		}
-		results = append(results, SearchResult{Capture: *record, Snippet: snippet, MatchCount: matches})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return results, nil
-}
-
-func (s *Store) searchLIKE(rootID, query string, contextLines int) ([]SearchResult, error) {
-	queryLower := strings.ToLower(query)
-	rows, err := s.db.Query(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at
-		FROM captures c
-		JOIN sessions ses ON ses.id = c.session_id
-		WHERE c.session_id = ? AND (LOWER(c.description) LIKE ? OR LOWER(c.content) LIKE ?)
-		ORDER BY c.seq ASC
-	`, rootID, "%"+queryLower+"%", "%"+queryLower+"%")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []SearchResult
-	for rows.Next() {
-		record, err := scanCapture(rows, true)
-		if err != nil {
-			return nil, err
-		}
-		snippet, matches := buildSnippet(record.Content, query, contextLines)
-		if matches == 0 {
-			continue
-		}
-		results = append(results, SearchResult{Capture: *record, Snippet: snippet, MatchCount: matches})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return results, nil
 }
 
 func nextSeq(tx *sql.Tx, rootID string) (int, error) {
@@ -794,31 +760,13 @@ func parseDBTime(value string) time.Time {
 	return time.Time{}
 }
 
-func buildFTSQuery(query string) string {
-	query = strings.TrimSpace(strings.ReplaceAll(query, `"`, `""`))
-	return fmt.Sprintf(`"%s"`, query)
-}
-
-func buildSnippet(content, query string, contextLines int) (string, int) {
+func buildSnippet(content string, re *regexp.Regexp, contextLines int) (string, int) {
 	lines := strings.Split(content, "\n")
-	queryLower := strings.ToLower(strings.TrimSpace(query))
-	tokens := strings.Fields(queryLower)
 	var matches []int
 
 	for idx, line := range lines {
-		lineLower := strings.ToLower(line)
-		if queryLower != "" && strings.Contains(lineLower, queryLower) {
+		if re.MatchString(line) {
 			matches = append(matches, idx)
-			continue
-		}
-		if len(tokens) == 0 {
-			continue
-		}
-		for _, token := range tokens {
-			if strings.Contains(lineLower, token) {
-				matches = append(matches, idx)
-				break
-			}
 		}
 	}
 

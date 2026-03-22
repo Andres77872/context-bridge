@@ -45,9 +45,9 @@ func registerTools(srv *server.MCPServer, st *store.Store) {
 	)
 
 	searchTool := mcp.NewTool("search",
-		mcp.WithDescription("Search across all captured outputs for the current session context."),
+		mcp.WithDescription("Search across all captured outputs for the current session context using Regex."),
 		mcp.WithString("session_id", mcp.Description("Root or child OpenCode session ID.")),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Text query to search for across stored outputs.")),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Regex pattern or text query to search for across stored outputs.")),
 		mcp.WithNumber("context_lines", mcp.Description("Optional lines of context around each match. Defaults to 3.")),
 	)
 

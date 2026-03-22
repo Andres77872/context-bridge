@@ -12,23 +12,22 @@ When working with OpenCode, subagents (grep, explore, executor, etc.) produce ou
 
 ## How it works
 
-```
-OpenCode session
-       │
-       ▼
-  thin TS plugin ──────► HTTP ──────► context-bridge serve (Go binary)
-       │                                      │
-       │                                      ▼
-       │                              SQLite + FTS5 store
-       │                                      │
-       ▼                                      ▼
-  MCP tools ◄──────────────────────────── context-bridge mcp
-       │
-       ▼
-  Agent reads prior outputs
+```mermaid
+flowchart TD
+    O[Parent or child agent session] -->|Task completes| P[context-bridge.ts plugin]
+    P -->|POST /capture| S[Context Bridge HTTP server]
+    S --> DB[(SQLite store.db)]
+    DB --> FTS[(FTS5 index)]
+
+    P -->|GET /hint?session_id=...| S
+    S -->|render prior outputs for root session| P
+    P -->|append hint| C[Child system prompt]
+    
+    C -->|Agent reads prior outputs| MCP[Context Bridge MCP]
+    MCP <--> DB
 ```
 
-The plugin is a thin HTTP bridge (114 lines, no business logic). The Go binary owns all data persistence and query logic.
+The plugin is a thin HTTP bridge (114 lines, no business logic). The Go binary owns all data persistence and query logic, resolving all captured data to the **root session** so child tasks can seamlessly access prior research.
 
 ## Prerequisites
 
@@ -249,14 +248,14 @@ Reads the full content of a specific output by its sequence number.
 
 ### `search`
 
-Full-text search across all captured outputs for a session.
+Full-text regex search across all captured outputs for a session.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `session_id` | string | yes | OpenCode session ID |
-| `query` | string | yes | Search query (FTS5 syntax supported) |
+| `query` | string | yes | Search query (Regex supported) |
 | `context_lines` | number | no | Lines of context around matches (default: 3) |
 
 **Example:**
@@ -414,10 +413,11 @@ export CONTEXT_BRIDGE_PORT=7439
 
 ### Search returns no results
 
-The search uses FTS5. Try:
-- Simpler queries without special characters
-- OR syntax: `term1 OR term2`
-- Prefix matching: `auth*`
+The search uses standard regular expressions. Try:
+- Using `(?i)` prefix for case-insensitive matching
+- Simpler queries without special regex characters
+- OR syntax: `term1|term2`
+- Prefix matching: `auth.*`
 
 ## Architecture
 
@@ -442,5 +442,15 @@ Key components:
 
 ## Related Projects
 
-- **[Engram](https://github.com/anomalyco/engram)** — Persistent memory system with `mem_*` tools, topics, and cross-session recall
-- **OpenCode** — The IDE agent framework this integrates with
+- **[Engram](https://github.com/anomalyco/engram)** — Persistent memory system with `mem_*` tools, topics, and cross-session recall.
+- **OpenCode** — The IDE agent framework this integrates with.
+
+### Context Bridge vs. Engram
+
+| Aspect | Context Bridge | Engram |
+| --- | --- | --- |
+| **Lifetime** | Same session tree only | Persistent across sessions |
+| **Primary content** | Raw-ish subagent outputs | Curated observations / summaries |
+| **Trigger** | Automatic on Task completion | Explicit `mem_save` / `mem_session_summary` |
+| **Scope** | Root session descendants | Global DB with project/scope filtering |
+| **Typical question**| "What did the grep task find 10 minutes ago?" | "How did we solve this class of problem last month?" |

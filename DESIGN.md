@@ -260,26 +260,23 @@ type SearchArgs struct {
 3. Return grouped match snippets with capture header (seq, agent, task)
 
 **Search implementation**:
-- FTS5 `MATCH` for fast indexed lookups
+- Regular expression matching over capture content
+- Fallback to exact literal match if regex compile fails
 - Post-filter: extract matching line ranges with `contextLines` padding
-- No BM25 ranking needed initially; FTS5 rowid order is sufficient
 - Max 5 match groups per capture in output to control token cost
 
 ---
 
-### Tool: `context_bridge_hint` (internal, not agent-facing)
+### HTTP API (Internal)
 
-**Purpose**: Called exclusively by the thin TS plugin to get the pre-rendered hint string for a session.
+**Purpose**: Called exclusively by the thin TS plugin to manage captures and get the pre-rendered hint string for a session. The OpenCode plugin uses HTTP `fetch` to talk to the `context-bridge serve` process.
 
-```go
-type HintArgs struct {
-    SessionID string `json:"session_id" jsonschema:"required"`
-}
-```
+**Endpoints**:
+- `POST /events`: Handles `session.created` and `session.deleted`
+- `POST /capture`: Ingests a new subagent output
+- `GET /hint?session_id=...`: Returns plain text hint block or empty string if no captures exist
 
-**Returns**: plain text hint block or empty string if no captures exist.
-
-This tool is NOT listed in `opencode.json` agent permissions — only the TS plugin uses it.
+These endpoints are NOT exposed to agents.
 
 ---
 
@@ -334,42 +331,49 @@ Installed manually to: `~/.config/opencode/plugins/context-bridge.ts`
 ### Responsibilities (only these)
 
 ```typescript
-const CB_BIN = process.env.CONTEXT_BRIDGE_BIN ?? "context-bridge"
+const CB_URL = `http://${process.env.CONTEXT_BRIDGE_ADDR ?? "127.0.0.1:7438"}`
 
 export const ContextBridge: Plugin = async (ctx) => {
   return {
     // 1. Register session/parent relationship
     event: async (event) => {
-      if (event.type === "session.created" && event.properties?.info) {
-        const { id, parentID } = event.properties.info
-        if (id) await mcpCall("ensure_session", { id, parent_id: parentID ?? null })
-      }
-      if (event.type === "session.deleted" && event.properties?.info) {
-        await mcpCall("mark_session_deleted", { id: event.properties.info.id })
-      }
+      await fetch(`${CB_URL}/events`, {
+        method: "POST",
+        body: JSON.stringify(event)
+      }).catch(() => {}) // degrade silently
     },
 
-    // 2. Forward Task outputs to MCP for capture
+    // 2. Forward Task outputs to HTTP server for capture
     "tool.execute.after": async (input, output) => {
       if (!isTaskTool(input.name)) return
       const content = extractOutputText(output)
       if (!content || content.length < 100) return
-      await mcpCall("capture_output", {
-        parent_session_id: input.sessionID,
-        child_session_id:  output.metadata?.sessionId ?? null,
-        call_id:           input.callID,
-        agent:             input.args?.subagent_type ?? input.args?.subagentType ?? "unknown",
-        description:       input.args?.description ?? "",
-        content,
-        captured_at:       new Date().toISOString(),
-      })
+      
+      await fetch(`${CB_URL}/capture`, {
+        method: "POST",
+        body: JSON.stringify({
+          parent_session_id: input.sessionID,
+          child_session_id:  output.metadata?.sessionId ?? null,
+          call_id:           input.callID,
+          agent:             input.args?.subagent_type ?? input.args?.subagentType ?? "unknown",
+          description:       input.args?.description ?? "",
+          content,
+          captured_at:       new Date().toISOString(),
+        })
+      }).catch(() => {})
     },
 
     // 3. Inject hint into child session system prompts
     "experimental.chat.system.transform": async (sessionID, system) => {
-      const hint = await mcpCall("context_bridge_hint", { session_id: sessionID })
-      if (!hint) return system
-      return system + "\n\n" + hint
+      try {
+        const res = await fetch(`${CB_URL}/hint?session_id=${sessionID}`)
+        if (!res.ok) return system
+        const hint = await res.text()
+        if (!hint) return system
+        return system + "\n\n" + hint
+      } catch {
+        return system
+      }
     },
   }
 }
@@ -383,10 +387,8 @@ export const ContextBridge: Plugin = async (ctx) => {
 - No search logic
 - No preview extraction
 
-### MCP transport
-The plugin communicates with the Go binary via the MCP stdio transport. OpenCode's MCP client handles the subprocess lifecycle (starts `context-bridge mcp`, keeps it alive, routes tool calls). The plugin calls MCP tools via `ctx.tools.*` or equivalent OpenCode plugin MCP bridge — same pattern as `engram.ts`.
-
-Note: `ensure_session`, `mark_session_deleted`, and `capture_output` are additional **internal MCP tools** (not agent-facing) exposed on the same server but NOT listed in `opencode.json` permissions. They are only callable from the plugin process, not from agent LLMs.
+### Communication Transport
+The plugin communicates with the Go binary via HTTP for lifecycle events and prompt injection. It manages auto-spawning the `context-bridge serve` process if the server is unreachable. OpenCode's MCP client handles the subprocess lifecycle for agent-facing tools via `context-bridge mcp`.
 
 ---
 
@@ -599,7 +601,7 @@ The internal tools (`capture_output`, `ensure_session`, `mark_session_deleted`, 
 | `github.com/charmbracelet/bubbles` | `latest` | `textinput`, `viewport` components |
 | `github.com/charmbracelet/lipgloss` | `latest` | Terminal styling |
 
-**No HTTP server.** Unlike Engram, context-bridge communicates with the plugin exclusively via the MCP stdio transport. The OpenCode MCP client manages the subprocess.
+**HTTP Server**: The standard library `net/http` is used for the `serve` command which receives OpenCode lifecycle hooks and plugin captures. This avoids the overhead of MCP subprocess management for fire-and-forget captures. OpenCode talks to the MCP stdio server only for the 3 agent-facing tools.
 
 ---
 
@@ -681,9 +683,7 @@ Tasks:
 
 **Decision**: One `context-bridge mcp` process per OpenCode session. SQLite WAL handles concurrent access from multiple such processes on the same DB file.
 
-### R3: FTS5 content table sync drift
-**Risk**: If the triggers fail or the DB is corrupted, FTS5 index drifts from `captures`.  
-**Mitigation**: Provide `context-bridge rebuild-fts` hidden subcommand that runs `INSERT INTO captures_fts(captures_fts) VALUES('rebuild')` to resync. Can be called manually if search returns stale results.
+
 
 ### R4: Old plugin still active during transition
 **Risk**: Running both old and new plugins simultaneously causes double-capture.  
@@ -700,8 +700,8 @@ Tasks:
 
 ### R7: Search quality regression
 **Current**: Linear scan with case-insensitive substring match (simple, predictable).  
-**New**: FTS5 `MATCH` (tokenized, faster, slightly different semantics).  
-**Mitigation**: FTS5 defaults to unicode tokenizer which handles common cases. For exact substring matching not handled by FTS5, add a fallback `LIKE '%query%'` on the raw content column when FTS5 returns zero results. Document this behavior difference.
+**New**: Regex search across captures (more powerful, supports grep-like functionality).  
+**Mitigation**: We automatically prefix regex with `(?i)` if valid, to preserve case-insensitive match behavior by default, and fall back to quoted literal matches if regex fails to compile.
 
 ### R8: preview extraction at query time vs ingestion time
 **Decision**: Extract at ingestion. Preview is stored in DB.  
@@ -738,7 +738,8 @@ Do NOT redo research that already exists.
 | Concern | Decision |
 |---|---|
 | Persistence | SQLite with FTS5, WAL, `modernc.org/sqlite` (pure Go) |
-| MCP transport | stdio via `github.com/mark3labs/mcp-go` |
+| MCP transport | stdio via `github.com/mark3labs/mcp-go` (for agent tools only) |
+| Plugin transport | HTTP server (`net/http`) via `context-bridge serve` |
 | Plugin | Thin TS adapter, ~100 lines, no business logic |
 | Session cleanup | Soft-delete with `deleted_at`; manual purge CLI |
 | Search | FTS5 primary, LIKE fallback |

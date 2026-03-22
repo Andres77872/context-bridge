@@ -163,7 +163,7 @@ func TestGetCaptureBySeqUsesRootResolution(t *testing.T) {
 	}
 }
 
-func TestSearchFallsBackToLIKEAndBuildsSnippet(t *testing.T) {
+func TestSearchUsesRegexAndBuildsSnippet(t *testing.T) {
 	st := openTestStore(t)
 	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 13, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
@@ -173,11 +173,7 @@ func TestSearchFallsBackToLIKEAndBuildsSnippet(t *testing.T) {
 		content:        "first line\nneedle term appears here\nfinal line",
 	})
 
-	if _, err := st.db.Exec(`DROP TABLE captures_fts`); err != nil {
-		t.Fatalf("drop fts table: %v", err)
-	}
-
-	results, err := st.Search("ses-child", "needle", 1)
+	results, err := st.Search("ses-child", "n[e]+dle", 1)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -342,5 +338,261 @@ func TestStatsReturnsAggregates(t *testing.T) {
 	}
 	if stats.TotalBytes <= 0 {
 		t.Fatalf("expected TotalBytes > 0, got %d", stats.TotalBytes)
+	}
+}
+
+func TestMarkSessionDeleted(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC()
+
+	_, err := st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-to-delete",
+		ChildSessionID:  "",
+		CallID:          "call-1",
+		Agent:           "grep",
+		Description:     "test",
+		Content:         "test content",
+		CapturedAt:      now,
+	})
+	if err != nil {
+		t.Fatalf("AddCapture: %v", err)
+	}
+
+	// Session should be visible
+	sessions, err := st.ListRootSessions(10)
+	if err != nil {
+		t.Fatalf("ListRootSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].DeletedAt != nil {
+		t.Fatalf("expected 1 active session, got %d", len(sessions))
+	}
+
+	// Delete it
+	if err := st.MarkSessionDeleted("ses-to-delete"); err != nil {
+		t.Fatalf("MarkSessionDeleted: %v", err)
+	}
+
+	// Should still be returned but with DeletedAt set
+	sessionsAfter, err := st.ListRootSessions(10)
+	if err != nil {
+		t.Fatalf("ListRootSessions after delete: %v", err)
+	}
+	if len(sessionsAfter) != 1 {
+		t.Fatalf("expected session to still be returned, got %d", len(sessionsAfter))
+	}
+	if sessionsAfter[0].DeletedAt == nil {
+		t.Fatal("expected DeletedAt to be set")
+	}
+
+	// Stats should exclude deleted sessions
+	stats, err := st.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Sessions != 0 {
+		t.Fatalf("expected 0 active sessions in stats, got %d", stats.Sessions)
+	}
+}
+
+func TestListCapturesFiltersByAgent(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC()
+
+	st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-1",
+		CallID:          "call-1",
+		Agent:           "grep",
+		Description:     "test1",
+		Content:         "content1",
+		CapturedAt:      now,
+	})
+	st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-1",
+		CallID:          "call-2",
+		Agent:           "explore",
+		Description:     "test2",
+		Content:         "content2",
+		CapturedAt:      now,
+	})
+
+	// Get all
+	all, err := st.ListCaptures("ses-1", "")
+	if err != nil {
+		t.Fatalf("ListCaptures all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 captures, got %d", len(all))
+	}
+
+	// Get grep only
+	grep, err := st.ListCaptures("ses-1", "grep")
+	if err != nil {
+		t.Fatalf("ListCaptures grep: %v", err)
+	}
+	if len(grep) != 1 || grep[0].Agent != "grep" {
+		t.Fatalf("expected 1 grep capture, got %d", len(grep))
+	}
+}
+
+func TestResolveRootCycleDetection(t *testing.T) {
+	st := openTestStore(t)
+
+	// Create a cycle manually via raw SQL since EnsureSession prevents direct cycles
+	tx, _ := st.db.Begin()
+	// Create sessions first without parents to satisfy foreign key constraint
+	tx.Exec(`INSERT INTO sessions (id) VALUES ('a')`)
+	tx.Exec(`INSERT INTO sessions (id) VALUES ('b')`)
+	tx.Exec(`INSERT INTO sessions (id) VALUES ('c')`)
+
+	// Then link them to create a cycle
+	tx.Exec(`UPDATE sessions SET parent_id = 'b' WHERE id = 'a'`)
+	tx.Exec(`UPDATE sessions SET parent_id = 'c' WHERE id = 'b'`)
+	tx.Exec(`UPDATE sessions SET parent_id = 'a' WHERE id = 'c'`)
+	tx.Commit()
+
+	_, err := st.ResolveRoot("a")
+	if err == nil || !strings.Contains(err.Error(), "cycle detected") {
+		t.Fatalf("expected cycle detected error, got %v", err)
+	}
+}
+
+func TestAddCaptureValidationErrors(t *testing.T) {
+	st := openTestStore(t)
+
+	// Missing parent ID
+	_, err := st.AddCapture(CaptureInput{
+		CallID:  "call-1",
+		Content: "content",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing parent ID")
+	}
+
+	// Missing call ID
+	_, err = st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-1",
+		Content:         "content",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing call ID")
+	}
+
+	// Missing content
+	_, err = st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-1",
+		CallID:          "call-1",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing content")
+	}
+}
+
+func TestImportCaptureValidationErrors(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC()
+
+	// Missing root ID
+	_, err := st.ImportCapture("", CaptureInput{CallID: "1", Content: "c"}, 1, "", "", 0, false)
+	if err == nil {
+		t.Fatal("expected error for missing root ID")
+	}
+
+	// Invalid seq
+	_, err = st.ImportCapture("ses", CaptureInput{CallID: "1", Content: "c"}, 0, "", "", 0, false)
+	if err == nil {
+		t.Fatal("expected error for invalid seq")
+	}
+
+	// Missing call ID
+	_, err = st.ImportCapture("ses", CaptureInput{Content: "c"}, 1, "", "", 0, false)
+	if err == nil {
+		t.Fatal("expected error for missing call ID")
+	}
+
+	// Missing content
+	_, err = st.ImportCapture("ses", CaptureInput{CallID: "1"}, 1, "", "", 0, false)
+	if err == nil {
+		t.Fatal("expected error for missing content")
+	}
+
+	// Valid insert
+	record, err := st.ImportCapture("ses-1", CaptureInput{
+		ParentSessionID: "ses-1",
+		CallID:          "call-valid",
+		Agent:           "grep",
+		Description:     "desc",
+		Content:         "valid content",
+		CapturedAt:      now,
+	}, 1, "/tmp/source", "prev", 100, true)
+
+	if err != nil {
+		t.Fatalf("unexpected error on valid import: %v", err)
+	}
+	if record.SourcePath != "/tmp/source" {
+		t.Fatalf("expected source path /tmp/source, got %q", record.SourcePath)
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		input int
+		want  string
+	}{
+		{500, "500 B"},
+		{1024, "1.0 KB"},
+		{1536, "1.5 KB"},
+		{1048576, "1.0 MB"},
+		{1572864, "1.5 MB"},
+	}
+
+	for _, tc := range tests {
+		got := FormatBytes(tc.input)
+		if got != tc.want {
+			t.Errorf("FormatBytes(%d) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestFormatRelativeTime(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		input time.Time
+		want  string
+	}{
+		{time.Time{}, "unknown"},
+		{now.Add(-30 * time.Second), "just now"},
+		{now.Add(-5 * time.Minute), "5m ago"},
+		{now.Add(-3 * time.Hour), "3h ago"},
+		{now.Add(-48 * time.Hour), "2d ago"},
+	}
+
+	for _, tc := range tests {
+		got := FormatRelativeTime(tc.input)
+		if got != tc.want {
+			t.Errorf("FormatRelativeTime(%v) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestExtractPreviewSkipsTaskIDAndTruncates(t *testing.T) {
+	content := `task_id: ignore_me
+	
+first line
+second line
+third line
+fourth line
+fifth line
+sixth line`
+
+	preview := extractPreview(content)
+	if strings.Contains(preview, "task_id") {
+		t.Errorf("preview should not contain task_id, got:\n%s", preview)
+	}
+	if strings.Contains(preview, "sixth line") {
+		t.Errorf("preview should be truncated to 5 lines, got:\n%s", preview)
+	}
+	if !strings.Contains(preview, "first line") {
+		t.Errorf("preview should contain first line, got:\n%s", preview)
 	}
 }

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "session": "ses-import",
+  "outputs": [
+    {
+      "seq": 1,
+      "agent": "grep",
+      "description": "Map current codebase",
+      "preview": "Mapped store and server packages",
+      "file": "001_grep.md",
+      "callID": "call-import-1",
+      "childSessionID": "ses-import-child",
+      "timestamp": "2026-03-22T07:00:00Z",
+      "bytes": 73
+    },
+    {
+      "seq": 2,
+      "agent": "explore",
+      "description": "Verify search behavior",
+      "preview": "Validated search snippets and ordering",
+      "file": "002_explore.md",
+      "callID": "call-import-2",
+      "childSessionID": "",
+      "timestamp": "2026-03-22T07:05:00Z",
+      "bytes": 87
+    }
+  ]
+}

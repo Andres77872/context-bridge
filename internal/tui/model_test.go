@@ -643,6 +643,7 @@ func TestStatusBarShowsErrorWhenSet(t *testing.T) {
 
 func TestConfirmDialogAppearsWhenActive(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
+	m.activeTab = TabSessions // Ensure we are in a tab that renders the right pane
 	m.confirmActive = true
 	m.confirmMsg = "Delete everything?"
 	output := m.View()

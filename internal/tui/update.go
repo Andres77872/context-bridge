@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"context-bridge/internal/store"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -337,6 +339,10 @@ func (m Model) updateDashboardKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmActive = true
 			m.confirmAction = confirmDeleteSession
 			m.confirmMsg = fmt.Sprintf("Delete session %s?", truncateID(selected.ID, 12))
+			m.confirmMeta = []string{
+				fmt.Sprintf("Created: %s", selected.CreatedAt.Format("2006-01-02 15:04")),
+				fmt.Sprintf("Outputs: %d", selected.CaptureCount),
+			}
 		}
 		return m, nil
 	}
@@ -387,6 +393,11 @@ func (m Model) updateSessionKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmActive = true
 			m.confirmAction = confirmDeleteCapture
 			m.confirmMsg = fmt.Sprintf("Delete output #%d?", selected.Seq)
+			m.confirmMeta = []string{
+				fmt.Sprintf("Agent: %s", selected.Agent),
+				fmt.Sprintf("Task:  %s", truncateLine(selected.Description, 40)),
+				fmt.Sprintf("Size:  %s", store.FormatBytes(selected.Bytes)),
+			}
 		}
 		return m, nil
 	}
@@ -528,6 +539,7 @@ func (m Model) handleConfirmKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "esc":
 		m.confirmActive = false
 		m.confirmMsg = ""
+		m.confirmMeta = nil
 		m.confirmAction = confirmNone
 	}
 	return m, nil
@@ -568,6 +580,7 @@ func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
 
 	m.confirmActive = false
 	m.confirmMsg = ""
+	m.confirmMeta = nil
 	m.confirmAction = confirmNone
 	return m, cmd
 }

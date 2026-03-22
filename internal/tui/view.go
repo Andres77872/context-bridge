@@ -48,10 +48,6 @@ func (m Model) View() string {
 	}
 	content := strings.Join(parts, "\n")
 
-	if m.confirmActive {
-		content += "\n" + m.renderConfirmDialog()
-	}
-
 	return appStyle.Render(content)
 }
 
@@ -118,7 +114,10 @@ func (m Model) viewSearchTab(w, h int) string {
 		innerH = 3
 	}
 
-	if m.selectedSession == "" {
+	if m.confirmActive {
+		dialog := m.renderConfirmDialog(rightW - 2)
+		rightPaneContent = lipgloss.Place(rightW-2, innerH, lipgloss.Center, lipgloss.Center, dialog)
+	} else if m.selectedSession == "" {
 		rightPaneContent = m.viewEmptySearchState()
 	} else {
 		switch m.rightPanel {
@@ -132,7 +131,7 @@ func (m Model) viewSearchTab(w, h int) string {
 	}
 
 	style := paneStyle
-	if m.focus != FocusSessions {
+	if m.focus != FocusSessions || m.confirmActive {
 		style = activePaneStyle
 	}
 
@@ -257,7 +256,10 @@ func (m Model) viewRightPane(w, h int) string {
 		innerH = 3
 	}
 
-	if m.selectedSession == "" {
+	if m.confirmActive {
+		dialog := m.renderConfirmDialog(w - 2)
+		content = lipgloss.Place(w-2, innerH, lipgloss.Center, lipgloss.Center, dialog)
+	} else if m.selectedSession == "" {
 		content = m.viewEmptySessionState()
 	} else {
 		switch m.rightPanel {
@@ -275,7 +277,7 @@ func (m Model) viewRightPane(w, h int) string {
 	}
 
 	style := paneStyle
-	if m.focus != FocusSessions {
+	if m.focus != FocusSessions || m.confirmActive {
 		style = activePaneStyle
 	}
 
@@ -540,11 +542,22 @@ func (m Model) renderStatusBar() string {
 }
 
 // renderConfirmDialog renders a modal confirmation box.
-func (m Model) renderConfirmDialog() string {
+func (m Model) renderConfirmDialog(maxWidth int) string {
 	var inner strings.Builder
 	inner.WriteString(confirmWarningStyle.Render("⚠  " + m.confirmMsg))
-	inner.WriteString("\n\n")
+	inner.WriteString("\n")
+
+	if len(m.confirmMeta) > 0 {
+		inner.WriteString("\n")
+		for _, meta := range m.confirmMeta {
+			inner.WriteString(dimStyle.Render("  "+truncateLine(meta, maxWidth-8)) + "\n")
+		}
+	}
+
+	inner.WriteString("\n")
 	inner.WriteString(helpStyle.Render("[y] Confirm  [n/esc] Cancel"))
+
+	// Optional: add a hard width to the box itself if it looks too wide, but padding does enough usually
 	return confirmBoxStyle.Render(inner.String())
 }
 

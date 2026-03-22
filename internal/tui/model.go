@@ -110,6 +110,7 @@ type Model struct {
 	// Confirm layer state (infrastructure for future destructive actions).
 	confirmActive bool
 	confirmMsg    string
+	confirmMeta   []string // extra metadata lines for the confirm dialog
 	confirmAction confirmAction
 
 	ready bool

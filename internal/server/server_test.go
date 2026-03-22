@@ -157,7 +157,7 @@ func TestHintEndpointReturnsRenderedHint(t *testing.T) {
 	if !strings.Contains(body.Text, "[#1] [grep] Map codebase") {
 		t.Fatalf("expected numbered hint entry, got %q", body.Text)
 	}
-	if !strings.Contains(body.Text, "context_bridge_read") {
+	if !strings.Contains(body.Text, "read") {
 		t.Fatalf("expected MCP guidance in hint, got %q", body.Text)
 	}
 }

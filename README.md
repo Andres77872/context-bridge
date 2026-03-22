@@ -83,9 +83,9 @@ Add to `~/.config/opencode/opencode.json`:
     }
   },
   "permission": {
-    "context_bridge": "allow",
-    "context_bridge_read": "allow",
-    "context_bridge_search": "allow"
+    "list": "allow",
+    "read": "allow",
+    "search": "allow"
   }
 }
 ```
@@ -170,7 +170,7 @@ context-bridge version
 
 ## MCP Tools
 
-### `context_bridge`
+### `list`
 
 Lists all captured outputs for a session with sequence numbers, timestamps, sizes, and previews.
 
@@ -210,10 +210,10 @@ Root session: `ses_abc123`
 > ## auth module investigation
 > Found 3 files implementing authentication...
 
-Use `context_bridge_read` with `session_id="ses_abc123"` and `output=<number>` to read one output.
+Use `read` with `session_id="ses_abc123"` and `output=<number>` to read one output.
 ```
 
-### `context_bridge_read`
+### `read`
 
 Reads the full content of a specific output by its sequence number.
 
@@ -247,7 +247,7 @@ Reads the full content of a specific output by its sequence number.
 ...
 ```
 
-### `context_bridge_search`
+### `search`
 
 Full-text search across all captured outputs for a session.
 
@@ -275,7 +275,7 @@ Full-text search across all captured outputs for a session.
 ## Search: "authentication JWT"
 
 3 match(es) across 2 outputs.
-Use `context_bridge_read` with `session_id="ses_abc123"` and the output # to read full content.
+Use `read` with `session_id="ses_abc123"` and the output # to read full content.
 
 ### #1 [grep] Investigate auth module
 1 match(es)

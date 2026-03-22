@@ -111,7 +111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sprintf("## Search: %q", msg.query),
 				"",
 				fmt.Sprintf("%d match(es) across %d outputs.", totalMatches, len(msg.results)),
-				fmt.Sprintf("Use `context_bridge_read` with `session_id=%q` and the output # to read full content.", msg.rootID),
+				fmt.Sprintf("Use `read` with `session_id=%q` and the output # to read full content.", msg.rootID),
 				"",
 				strings.Join(groups, "\n\n"),
 			}, "\n")

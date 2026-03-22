@@ -31,7 +31,7 @@ func TestContextBridgeToolListsOutputsAndSupportsAgentFilter(t *testing.T) {
 	})
 
 	srv := New(st, "test")
-	resp := callTool(t, srv, "context_bridge", map[string]any{
+	resp := callTool(t, srv, "list", map[string]any{
 		"session_id": "ses-child-2",
 		"agent":      "grep",
 	})
@@ -65,7 +65,7 @@ func TestContextBridgeReadToolReturnsFullOutput(t *testing.T) {
 	})
 
 	srv := New(st, "test")
-	resp := callTool(t, srv, "context_bridge_read", map[string]any{
+	resp := callTool(t, srv, "read", map[string]any{
 		"session_id": "ses-child",
 		"output":     2,
 	})
@@ -95,7 +95,7 @@ func TestContextBridgeSearchToolReturnsMatches(t *testing.T) {
 	})
 
 	srv := New(st, "test")
-	resp := callTool(t, srv, "context_bridge_search", map[string]any{
+	resp := callTool(t, srv, "search", map[string]any{
 		"session_id":    "ses-child",
 		"query":         "auth bug",
 		"context_lines": 1,
@@ -107,7 +107,7 @@ func TestContextBridgeSearchToolReturnsMatches(t *testing.T) {
 	for _, want := range []string{
 		"## Search: \"auth bug\"",
 		"2 match(es) across 1 outputs.",
-		"Use `context_bridge_read` with `session_id=\"ses-root\"` and the output # to read full content.",
+		"Use `read` with `session_id=\"ses-root\"` and the output # to read full content.",
 		"### #1 [explore] Search auth bug",
 		">>>",
 	} {

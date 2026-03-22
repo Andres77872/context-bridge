@@ -12,7 +12,7 @@ import (
 )
 
 const serverInstructions = `Context Bridge exposes same-session research history captured from OpenCode subagents.
-Use context_bridge to list prior outputs, context_bridge_search to search them, and context_bridge_read to read one by output number.`
+Use list to list prior outputs, search to search them, and read to read one by output number.`
 
 const timeFormat = "2006-01-02T15:04:05Z07:00"
 
@@ -32,19 +32,19 @@ func Serve(st *store.Store, version string) error {
 }
 
 func registerTools(srv *server.MCPServer, st *store.Store) {
-	listTool := mcp.NewTool("context_bridge",
+	listTool := mcp.NewTool("list",
 		mcp.WithDescription("View the current session's subagent output history with sequence numbers, times, sizes, and previews."),
 		mcp.WithString("session_id", mcp.Description("Root or child OpenCode session ID.")),
 		mcp.WithString("agent", mcp.Description("Optional agent filter, for example grep or explore.")),
 	)
 
-	readTool := mcp.NewTool("context_bridge_read",
+	readTool := mcp.NewTool("read",
 		mcp.WithDescription("Read the full content of one captured output by its output number."),
 		mcp.WithString("session_id", mcp.Description("Root or child OpenCode session ID.")),
 		mcp.WithNumber("output", mcp.Required(), mcp.Description("Output number from the hint or list output.")),
 	)
 
-	searchTool := mcp.NewTool("context_bridge_search",
+	searchTool := mcp.NewTool("search",
 		mcp.WithDescription("Search across all captured outputs for the current session context."),
 		mcp.WithString("session_id", mcp.Description("Root or child OpenCode session ID.")),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Text query to search for across stored outputs.")),
@@ -96,7 +96,7 @@ func registerTools(srv *server.MCPServer, st *store.Store) {
 			"",
 			strings.Join(previews, "\n\n"),
 			"",
-			fmt.Sprintf("Use `context_bridge_read` with `session_id=%q` and `output=<number>` to read one output.", rootID),
+			fmt.Sprintf("Use `read` with `session_id=%q` and `output=<number>` to read one output.", rootID),
 		}, "\n")
 
 		return mcp.NewToolResultText(text), nil
@@ -174,7 +174,7 @@ func registerTools(srv *server.MCPServer, st *store.Store) {
 			fmt.Sprintf("## Search: %q", query),
 			"",
 			fmt.Sprintf("%d match(es) across %d outputs.", totalMatches, len(results)),
-			fmt.Sprintf("Use `context_bridge_read` with `session_id=%q` and the output # to read full content.", rootID),
+			fmt.Sprintf("Use `read` with `session_id=%q` and the output # to read full content.", rootID),
 			"",
 			strings.Join(groups, "\n\n"),
 		}, "\n")

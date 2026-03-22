@@ -189,11 +189,11 @@ There are N prior subagent outputs from this session:
   /abs/path/to/output-or-use-seq-for-lookup
 - [#2] [explore] Another task description ...
 
-**REQUIRED**: Use context_bridge_read with the output # to read full content.
-Use context_bridge_search to find specific information across all outputs.
+**REQUIRED**: Use read with the output # to read full content.
+Use search to find specific information across all outputs.
 ```
 
-The hint includes `#seq` numbers so agents can call `context_bridge_read` by number without consulting the list tool first.
+The hint includes `#seq` numbers so agents can call `read` by number without consulting the list tool first.
 
 ---
 
@@ -201,7 +201,7 @@ The hint includes `#seq` numbers so agents can call `context_bridge_read` by num
 
 The Go MCP server exposes exactly three tools, preserving current agent-facing names.
 
-### Tool: `context_bridge`
+### Tool: `list`
 
 **Purpose**: List all captured outputs for the current session context.
 
@@ -224,7 +224,7 @@ type ListArgs struct {
 
 ---
 
-### Tool: `context_bridge_read`
+### Tool: `read`
 
 **Purpose**: Read the full content of one output by its sequence number.
 
@@ -242,7 +242,7 @@ type ReadArgs struct {
 
 ---
 
-### Tool: `context_bridge_search`
+### Tool: `search`
 
 **Purpose**: Full-text search across all outputs in the current session context.
 
@@ -578,9 +578,9 @@ The user must manually add this to `~/.config/opencode/opencode.json`:
     }
   },
   "permission": {
-    "context_bridge":        { "allow": true },
-    "context_bridge_read":   { "allow": true },
-    "context_bridge_search": { "allow": true }
+    "list":        { "allow": true },
+    "read":   { "allow": true },
+    "search": { "allow": true }
   }
 }
 ```
@@ -628,7 +628,7 @@ Tasks:
 3. Verify hint injection works in a live OpenCode session
 4. Update `AGENTS.md` / `ORCHESTRATOR.md` prompt contracts to reference `#seq` numbers in hint
 
-Acceptance: Existing sessions continue to produce and recover subagent outputs with same UX. Agents use `context_bridge_read` with `#` numbers from hint.
+Acceptance: Existing sessions continue to produce and recover subagent outputs with same UX. Agents use `read` with `#` numbers from hint.
 
 ---
 
@@ -711,7 +711,7 @@ Tasks:
 
 ## 15. Hint Contract Change (Breaking)
 
-The current hint format shows **file paths**, which agents cannot use with `context_bridge_read` (which takes a seq number). This is a known contract bug.
+The current hint format shows **file paths**, which agents cannot use with `read` (which takes a seq number). This is a known contract bug.
 
 **New hint format**:
 ```
@@ -723,9 +723,9 @@ There are 3 prior subagent outputs from this session:
 - [#3] [explore] Find all Button component variants
 
 **REQUIRED**: Before starting, check prior research relevant to your task.
-- Use `context_bridge_read` with the # number to read full output
-- Use `context_bridge_search` with keywords to find specific info
-- Use `context_bridge` to see the full list with sizes and timestamps
+- Use `read` with the # number to read full output
+- Use `search` with keywords to find specific info
+- Use `list` to see the full list with sizes and timestamps
 Do NOT redo research that already exists.
 ```
 
@@ -746,6 +746,6 @@ Do NOT redo research that already exists.
 | Auto-config | None — fully manual setup |
 | Migration | `context-bridge migrate` reads old manifest format, idempotent |
 | Legacy flat files | Skipped (insufficient metadata) |
-| Tool names | Preserved: `context_bridge`, `context_bridge_read`, `context_bridge_search` |
+| Tool names | `list`, `read`, `search` |
 | Hint format | Changed: `#seq` numbers instead of file paths (breaking, intentional) |
 | Install | Build binary → copy to PATH → edit `opencode.json` → copy plugin |

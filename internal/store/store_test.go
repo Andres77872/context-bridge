@@ -222,7 +222,7 @@ func TestRenderHintIncludesNumberedOutputs(t *testing.T) {
 		"There are 2 prior subagent outputs from this session:",
 		"- [#1] [grep] Map the codebase",
 		"- [#2] [explore] Verify architecture",
-		"context_bridge_read",
+		"Use `read` with `session_id=\"ses-root\"`",
 		"session_id=\"ses-root\"",
 	} {
 		if !strings.Contains(hint, want) {

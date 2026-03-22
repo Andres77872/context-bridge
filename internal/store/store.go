@@ -493,9 +493,9 @@ func (s *Store) RenderHint(sessionID string) (string, error) {
 	lines = append(lines,
 		"",
 		"**REQUIRED**: Before starting your task, check prior research that is relevant.",
-		fmt.Sprintf("- Use `context_bridge_read` with `session_id=%q` and the output # to read full content", rootID),
-		fmt.Sprintf("- Use `context_bridge_search` with `session_id=%q` and keywords to find specific info", rootID),
-		fmt.Sprintf("- Use `context_bridge` with `session_id=%q` to see the full list with previews", rootID),
+		fmt.Sprintf("- Use `read` with `session_id=%q` and the output # to read full content", rootID),
+		fmt.Sprintf("- Use `search` with `session_id=%q` and keywords to find specific info", rootID),
+		fmt.Sprintf("- Use `list` with `session_id=%q` to see the full list with previews", rootID),
 		"Do NOT redo research that already exists.",
 	)
 

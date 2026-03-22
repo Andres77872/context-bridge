@@ -22,6 +22,7 @@ var (
 	appStyle      = lipgloss.NewStyle().Padding(1, 2)
 	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(colorIris)
 	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(colorIris)
+	heroStyle     = lipgloss.NewStyle().Foreground(colorPine).Bold(true)
 	helpStyle     = lipgloss.NewStyle().Foreground(colorMuted)
 	metaStyle     = lipgloss.NewStyle().Foreground(colorSubtle)
 	statusStyle   = lipgloss.NewStyle().Foreground(colorFoam)
@@ -31,10 +32,36 @@ var (
 	scrollStyle   = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 )
 
+// Tab styles
+var (
+	tabStyle = lipgloss.NewStyle().
+			Foreground(colorSubtle).
+			Padding(0, 2)
+
+	activeTabStyle = lipgloss.NewStyle().
+			Foreground(colorBase).
+			Background(colorIris).
+			Bold(true).
+			Padding(0, 2)
+)
+
+// Layout panes
+var (
+	paneStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorSurface).
+			Padding(0, 1)
+
+	activePaneStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorIris).
+			Padding(0, 1)
+)
+
 // Panel / content borders — used only for detail views, not lists
 var (
 	panelStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorSurface).Padding(0, 1)
-	contentStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorMuted).Padding(1)
+	contentStyle = lipgloss.NewStyle().Padding(1)
 )
 
 // Stats card

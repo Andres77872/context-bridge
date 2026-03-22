@@ -50,6 +50,7 @@ func TestDashboardEnterLoadsSession(t *testing.T) {
 	seedSession(t, st, "ses_root", []seedCapture{{seq: 1, agent: "grep", desc: "first capture", content: "hello world"}})
 
 	m := New(st)
+	m.activeTab = TabSessions
 	m.dashboardSessions = []store.SessionSummary{{ID: "ses_root", CaptureCount: 1, LastCapturedAt: time.Now().UTC()}}
 	m.dashboardCursor = 0
 
@@ -80,7 +81,9 @@ func TestSearchEnterLoadsResults(t *testing.T) {
 	seedSession(t, st, "ses_root", []seedCapture{{seq: 1, agent: "grep", desc: "find auth", content: "auth bug appears here"}})
 
 	m := New(st)
-	m.screen = ScreenSearch
+	m.activeTab = TabSessions
+	m.rightPanel = PanelSearch
+	m.focus = FocusSearch
 	m.searchScope = "ses_root"
 	m.searchInput.SetValue("auth")
 	m.searchInput.Focus() // Focus is required for handleSearchInputKeys to fire.
@@ -109,13 +112,14 @@ func TestSearchEnterLoadsResults(t *testing.T) {
 
 func TestSearchRequiresSelectionFromDashboard(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenDashboard
+	m.activeTab = TabSessions
+	m.focus = FocusSessions
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	model := updated.(Model)
 
-	if model.screen != ScreenDashboard {
-		t.Fatalf("expected to remain on dashboard, got %v", model.screen)
+	if model.focus != FocusSessions {
+		t.Fatalf("expected to remain on dashboard, got %v", model.focus)
 	}
 	if model.statusMsg != "Select a session before searching" {
 		t.Fatalf("unexpected status: %q", model.statusMsg)
@@ -124,43 +128,46 @@ func TestSearchRequiresSelectionFromDashboard(t *testing.T) {
 
 func TestEscapeFromCaptureReturnsPreviousScreen(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenCapture
-	m.prevScreen = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusCaptureDetail
+	m.prevPanel = PanelCaptures
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	model := updated.(Model)
 
-	if model.screen != ScreenSession {
-		t.Fatalf("expected session screen, got %v", model.screen)
+	if model.focus != FocusCaptures {
+		t.Fatalf("expected session screen, got %v", model.focus)
 	}
 }
 
 // ---- Phase 2: q/esc consistency and input blur ----
 
 func TestQuitOnCaptureGoesBack(t *testing.T) {
-	// BUG FIX: previously q on ScreenCapture quit the app. Now it goes back.
+	// BUG FIX: previously q on FocusCaptureDetail quit the app. Now it goes back.
 	m := New(nil)
-	m.screen = ScreenCapture
-	m.prevScreen = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusCaptureDetail
+	m.prevPanel = PanelCaptures
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	model := updated.(Model)
 
-	if model.screen != ScreenSession {
-		t.Fatalf("expected to return to ScreenSession on q, got %v", model.screen)
+	if model.focus != FocusCaptures {
+		t.Fatalf("expected to return to FocusCaptures on q, got %v", model.focus)
 	}
 	// Must NOT issue a tea.Quit command.
 	if cmd != nil {
 		msg := cmd()
 		if msg == (tea.QuitMsg{}) {
-			t.Fatal("q on ScreenCapture must not quit the application")
+			t.Fatal("q on FocusCaptureDetail must not quit the application")
 		}
 	}
 }
 
 func TestQuitOnDashboardQuitsApp(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenDashboard
+	m.activeTab = TabSessions
+	m.focus = FocusSessions
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
@@ -173,10 +180,12 @@ func TestQuitOnDashboardQuitsApp(t *testing.T) {
 }
 
 func TestSearchInputBlurredOnNavAway(t *testing.T) {
-	// After pressing esc on ScreenSearch, searchInput must be blurred.
+	// After pressing esc on FocusSearch, searchInput must be blurred if empty.
 	m := New(nil)
-	m.screen = ScreenSearch
-	m.searchOrigin = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusSearch
+	m.searchOrigin = PanelCaptures
+	m.searchInput.SetValue("")
 	m.searchInput.Focus()
 
 	if !m.searchInput.Focused() {
@@ -187,53 +196,56 @@ func TestSearchInputBlurredOnNavAway(t *testing.T) {
 	model := updated.(Model)
 
 	if model.searchInput.Focused() {
-		t.Fatal("searchInput should be blurred after navigating away from ScreenSearch")
+		t.Fatal("searchInput should be blurred after navigating away from FocusSearch")
 	}
-	if model.screen != ScreenSession {
-		t.Fatalf("expected ScreenSession, got %v", model.screen)
+	if model.focus != FocusCaptures {
+		t.Fatalf("expected FocusCaptures, got %v", model.focus)
 	}
 }
 
 func TestQOnSessionGoesBackToDashboard(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusCaptures
 	m.selectedSession = "ses_abc"
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	model := updated.(Model)
 
-	if model.screen != ScreenDashboard {
-		t.Fatalf("expected ScreenDashboard on q from session, got %v", model.screen)
+	if model.focus != FocusSessions {
+		t.Fatalf("expected FocusSessions on q from session, got %v", model.focus)
 	}
 }
 
 func TestEscOnSearchResultsGoesBackToOrigin(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenSearchResults
-	m.searchOrigin = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusSearchResults
+	m.searchOrigin = PanelCaptures
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	model := updated.(Model)
 
-	if model.screen != ScreenSession {
-		t.Fatalf("expected ScreenSession, got %v", model.screen)
+	if model.focus != FocusCaptures {
+		t.Fatalf("expected FocusCaptures, got %v", model.focus)
 	}
 }
 
 // ---- Phase 5: inline filter ----
 
-func TestFilterActivatesOnFKey(t *testing.T) {
+func TestFilterActivatesOnSlashKey(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{
 		{Seq: 1, Agent: "grep", Description: "first"},
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	model := updated.(Model)
 
 	if !model.filterActive {
-		t.Fatal("expected filterActive=true after pressing f on ScreenSession")
+		t.Fatal("expected filterActive=true after pressing / on FocusCaptures")
 	}
 	if !model.filterInput.Focused() {
 		t.Fatal("expected filterInput to be focused after activating filter")
@@ -242,7 +254,8 @@ func TestFilterActivatesOnFKey(t *testing.T) {
 
 func TestFilterEscClearsFilter(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{
 		{Seq: 1, Agent: "grep"},
 		{Seq: 2, Agent: "explore"},
@@ -308,7 +321,8 @@ func TestFilterClientSide(t *testing.T) {
 
 func TestConfirmGatesKeyRouting(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenSession
+	m.activeTab = TabSessions
+	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep"}}
 	m.confirmActive = true
 	m.confirmMsg = "Are you sure?"
@@ -327,7 +341,7 @@ func TestConfirmGatesKeyRouting(t *testing.T) {
 
 func TestConfirmNClosesDialog(t *testing.T) {
 	m := New(nil)
-	m.screen = ScreenSession
+	m.focus = FocusCaptures
 	m.confirmActive = true
 	m.confirmMsg = "Delete this session?"
 	m.confirmAction = confirmNone
@@ -374,6 +388,7 @@ func TestStatsLoadedUpdatesModel(t *testing.T) {
 
 func TestDashboardScrollFollowsCursor(t *testing.T) {
 	m := New(nil)
+	m.activeTab = TabSessions
 	m.height = 10 // visibleCount = 10 - 6 = 4
 
 	sessions := make([]store.SessionSummary, 10)
@@ -449,9 +464,9 @@ func withDimensions(m Model, w, h int) Model {
 
 func TestDashboardEmptyStateHasHelpText(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
-	output := m.viewDashboard()
-	if !strings.Contains(output, "Run context-bridge serve") {
-		t.Fatalf("empty dashboard must mention 'Run context-bridge serve', got:\n%s", output)
+	output := m.viewOverviewTab(100, 20)
+	if !strings.Contains(output, "Run `context-bridge serve`") {
+		t.Fatalf("empty dashboard must mention 'Run `context-bridge serve`', got:\n%s", output)
 	}
 }
 
@@ -459,7 +474,7 @@ func TestDashboardShowsStatsCard(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
 	m.stats = store.StoreStats{Sessions: 3, Captures: 12, TotalBytes: 2048}
 	m.dashboardSessions = []store.SessionSummary{{ID: "ses_abc", CaptureCount: 12, CreatedAt: time.Now()}}
-	output := m.viewDashboard()
+	output := m.viewOverviewTab(100, 20)
 	if !strings.Contains(output, "3") {
 		t.Fatalf("stats card must show session count, got:\n%s", output)
 	}
@@ -470,45 +485,45 @@ func TestDashboardShowsStatsCard(t *testing.T) {
 
 func TestSessionFilterBarVisibleWhenActive(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
-	m.screen = ScreenSession
+	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep", Description: "test"}}
 	m.activateFilter()
-	output := m.viewSession()
+	output := m.viewSession(100, 20)
 	if !strings.Contains(output, "filter") && !strings.Contains(output, "/ ") {
 		t.Fatalf("filter bar should be visible when filter active, got:\n%s", output)
 	}
 }
 
-func TestSessionFilterBarHiddenWhenInactive(t *testing.T) {
+func TestSessionFilterBarPersistent(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
-	m.screen = ScreenSession
+	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep", Description: "test"}}
-	output := m.viewSession()
-	// In normal mode, help should say "f filter" not show the filter input.
-	if !strings.Contains(output, "f filter") {
-		t.Fatalf("normal session help should say 'f filter', got:\n%s", output)
+	output := m.viewSession(100, 20)
+	// In normal mode, it should show the dimmed filter prompt.
+	if !strings.Contains(output, "type to filter list") {
+		t.Fatalf("normal session help should mention filter prompt, got:\n%s", output)
+	}
+	if !strings.Contains(output, "s full-text search") {
+		t.Fatalf("normal session help should say 's full-text search', got:\n%s", output)
 	}
 }
 
 func TestScrollIndicatorVisibleWhenOverflow(t *testing.T) {
-	m := withDimensions(New(nil), 120, 10) // height=10 → visibleCount=4
+	m := withDimensions(New(nil), 120, 10) // height=10 → visibleCount=2
 	sessions := make([]store.SessionSummary, 20)
 	for i := range sessions {
 		sessions[i] = store.SessionSummary{ID: fmt.Sprintf("ses_%02d", i), CreatedAt: time.Now()}
 	}
 	m.dashboardSessions = sessions
-	output := m.viewDashboard()
-	if !strings.Contains(output, "showing") {
+	output := m.viewSessionsPane(30, 20)
+	if !strings.Contains(output, "/20") {
 		t.Fatalf("scroll indicator must appear when items > visible window, got:\n%s", output)
-	}
-	if !strings.Contains(output, "of 20") {
-		t.Fatalf("scroll indicator must show total count, got:\n%s", output)
 	}
 }
 
 func TestCaptureScreenShowsAgentBadge(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
-	m.screen = ScreenCapture
+	m.focus = FocusCaptureDetail
 	m.selectedCapture = &store.CaptureRecord{
 		Seq:         3,
 		Agent:       "grep",
@@ -518,7 +533,7 @@ func TestCaptureScreenShowsAgentBadge(t *testing.T) {
 		CapturedAt:  time.Now(),
 		Bytes:       100,
 	}
-	output := m.viewCapture()
+	output := m.viewCapture(100, 20)
 	if !strings.Contains(output, "grep") {
 		t.Fatalf("capture screen must show agent badge, got:\n%s", output)
 	}
@@ -526,12 +541,12 @@ func TestCaptureScreenShowsAgentBadge(t *testing.T) {
 
 func TestHelpTextChangesWhenFiltered(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
-	m.screen = ScreenSession
+	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep"}}
 
-	normalOutput := m.viewSession()
+	normalOutput := m.viewSession(100, 20)
 	m.activateFilter()
-	filteredOutput := m.viewSession()
+	filteredOutput := m.viewSession(100, 20)
 
 	if normalOutput == filteredOutput {
 		t.Fatal("help text should change when filter is active")
@@ -565,10 +580,10 @@ func TestConfirmDialogAppearsWhenActive(t *testing.T) {
 
 func TestSearchResultsEmptyStateShowsQuery(t *testing.T) {
 	m := withDimensions(New(nil), 120, 30)
-	m.screen = ScreenSearchResults
+	m.focus = FocusSearchResults
 	m.searchQuery = "somethingobscure"
 	m.searchResults = nil
-	output := m.viewSearchResults()
+	output := m.viewSearchResults(100, 20)
 	if !strings.Contains(output, "somethingobscure") {
 		t.Fatalf("empty search results must show the query, got:\n%s", output)
 	}

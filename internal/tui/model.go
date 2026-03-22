@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"context-bridge/internal/store"
@@ -9,37 +10,38 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 const dashboardLimit = 100
 
-// Screen represents the currently active TUI screen.
-type Screen int
+type Tab int
 
 const (
-	ScreenDashboard Screen = iota
-	ScreenSession
-	ScreenCapture
-	ScreenSearch
-	ScreenSearchResults
+	TabOverview Tab = iota
+	TabSessions
 )
 
-func (s Screen) String() string {
-	switch s {
-	case ScreenDashboard:
-		return "Dashboard"
-	case ScreenSession:
-		return "Session"
-	case ScreenCapture:
-		return "Capture"
-	case ScreenSearch:
-		return "Search"
-	case ScreenSearchResults:
-		return "Search Results"
-	default:
-		return "Unknown"
-	}
-}
+// FocusPane represents the currently focused pane.
+type FocusPane int
+
+const (
+	FocusSessions FocusPane = iota
+	FocusCaptures
+	FocusCaptureDetail
+	FocusSearch
+	FocusSearchResults
+)
+
+// RightPanel represents the view state of the right panel.
+type RightPanel int
+
+const (
+	PanelCaptures RightPanel = iota
+	PanelCaptureDetail
+	PanelSearch
+	PanelSearchResults
+)
 
 // confirmAction represents the action to perform after confirmation.
 type confirmAction int
@@ -50,9 +52,12 @@ const confirmNone confirmAction = iota
 type Model struct {
 	store *store.Store
 
-	screen       Screen
-	prevScreen   Screen
-	searchOrigin Screen
+	activeTab Tab
+
+	focus        FocusPane
+	rightPanel   RightPanel
+	prevPanel    RightPanel
+	searchOrigin RightPanel
 
 	width  int
 	height int
@@ -153,9 +158,11 @@ func New(st *store.Store) Model {
 
 	return Model{
 		store:           st,
-		screen:          ScreenDashboard,
-		prevScreen:      ScreenDashboard,
-		searchOrigin:    ScreenDashboard,
+		activeTab:       TabOverview,
+		focus:           FocusSessions,
+		rightPanel:      PanelCaptures,
+		prevPanel:       PanelCaptures,
+		searchOrigin:    PanelCaptures,
 		searchInput:     searchInput,
 		filterInput:     filterInput,
 		spinner:         sp,
@@ -165,7 +172,7 @@ func New(st *store.Store) Model {
 
 // Run starts the TUI program with alt-screen mode.
 func Run(st *store.Store) error {
-	program := tea.NewProgram(New(st), tea.WithAltScreen())
+	program := tea.NewProgram(New(st), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := program.Run()
 	return err
 }
@@ -250,13 +257,16 @@ func (m Model) selectedSearchResult() *store.SearchResult {
 
 // filteredCaptures returns the session captures filtered by filterQuery (client-side).
 func (m Model) filteredCaptures() []store.CaptureRecord {
-	if !m.filterActive || strings.TrimSpace(m.filterQuery) == "" {
+	if strings.TrimSpace(m.filterQuery) == "" {
 		return m.sessionCaptures
 	}
-	q := strings.ToLower(m.filterQuery)
+	q := strings.ToLower(strings.TrimSpace(m.filterQuery))
 	var out []store.CaptureRecord
 	for _, c := range m.sessionCaptures {
-		if strings.Contains(strings.ToLower(c.Agent+" "+c.Description), q) {
+		seqStr := fmt.Sprintf("%d", c.Seq)
+		if strings.Contains(seqStr, q) ||
+			strings.Contains(strings.ToLower(c.Agent), q) ||
+			strings.Contains(strings.ToLower(c.Description), q) {
 			out = append(out, c)
 		}
 	}
@@ -294,25 +304,31 @@ func (m *Model) syncComponentSize() {
 
 	m.ready = true
 
-	inputWidth := m.width - 10
+	rightPaneWidth := m.width - 34 - 4 // 34 for left pane + borders/padding. 4 for app padding.
+	if rightPaneWidth < 20 {
+		rightPaneWidth = 20
+	}
+
+	inputWidth := rightPaneWidth - 4
 	if inputWidth < 20 {
 		inputWidth = 20
 	}
 	m.searchInput.Width = inputWidth
 	m.filterInput.Width = inputWidth
 
-	vpWidth := m.width - 8 // account for contentStyle border + appStyle padding
+	vpWidth := rightPaneWidth - 6 // rightPane border/padding(4) + contentStyle padding(2)
 	if vpWidth < 20 {
 		vpWidth = 20
 	}
-	vpHeight := m.height - 12 // header + meta + desc + help + status + padding
+	vpHeight := m.height - 18 // header + meta + desc + help + status + padding + borders + tabs
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
 	m.contentViewport.Width = vpWidth
 	m.contentViewport.Height = vpHeight
 	if m.selectedCapture != nil {
-		m.contentViewport.SetContent(m.selectedCapture.Content)
+		wrappedContent := wordwrap.String(m.selectedCapture.Content, vpWidth)
+		m.contentViewport.SetContent(wrappedContent)
 	}
 }
 

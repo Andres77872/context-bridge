@@ -52,7 +52,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionCursor = 0
 		m.sessionScroll = 0
 		m.deactivateFilter()
-		m.screen = ScreenSession
+		m.rightPanel = PanelCaptures
+		m.focus = FocusCaptures
 		m.setStatus(fmt.Sprintf("Loaded %d outputs for %s", len(msg.captures), truncateID(msg.sessionID, 20)))
 		return m, nil
 
@@ -63,7 +64,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectedCapture = msg.record
-		m.screen = ScreenCapture
+		m.rightPanel = PanelCaptureDetail
+		m.focus = FocusCaptureDetail
 		m.syncComponentSize()
 		m.contentViewport.GotoTop()
 		if msg.record != nil {
@@ -83,63 +85,143 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchResults = msg.results
 		m.searchCursor = 0
 		m.searchResultsScroll = 0
-		m.screen = ScreenSearchResults
+		m.rightPanel = PanelSearchResults
+		m.focus = FocusSearchResults
 		m.searchErr = ""
 		m.setStatus(fmt.Sprintf("Found %d result(s) for %q", len(msg.results), msg.query))
 		return m, nil
+
+	case tea.MouseMsg:
+		if m.activeTab == TabOverview {
+			return m, nil
+		}
+		if m.focus == FocusCaptureDetail {
+			var cmd tea.Cmd
+			m.contentViewport, cmd = m.contentViewport.Update(msg)
+			return m, cmd
+		} else if m.focus == FocusSessions {
+			total := len(m.dashboardSessions)
+			visibleCount := (m.height - 10) - 2 // innerH - headerLines
+			if visibleCount < 3 {
+				visibleCount = 3
+			}
+			if msg.Type == tea.MouseWheelUp {
+				m.dashboardCursor = moveCursor(m.dashboardCursor, -1, total)
+				m.dashboardScroll = adjustScroll(m.dashboardCursor, m.dashboardScroll, visibleCount)
+			} else if msg.Type == tea.MouseWheelDown {
+				m.dashboardCursor = moveCursor(m.dashboardCursor, 1, total)
+				m.dashboardScroll = adjustScroll(m.dashboardCursor, m.dashboardScroll, visibleCount)
+			}
+			return m, nil
+		} else if m.focus == FocusCaptures {
+			visible := m.filteredCaptures()
+			total := len(visible)
+			visibleCount := (m.height - 10) - 8
+			if visibleCount < 3 {
+				visibleCount = 3
+			}
+			if msg.Type == tea.MouseWheelUp {
+				m.sessionCursor = moveCursor(m.sessionCursor, -1, total)
+				m.sessionScroll = adjustScroll(m.sessionCursor, m.sessionScroll, visibleCount)
+			} else if msg.Type == tea.MouseWheelDown {
+				m.sessionCursor = moveCursor(m.sessionCursor, 1, total)
+				m.sessionScroll = adjustScroll(m.sessionCursor, m.sessionScroll, visibleCount)
+			}
+			return m, nil
+		} else if m.focus == FocusSearchResults {
+			total := len(m.searchResults)
+			visibleCount := (m.height - 10) - 7
+			if visibleCount < 3 {
+				visibleCount = 3
+			}
+			if msg.Type == tea.MouseWheelUp {
+				m.searchCursor = moveCursor(m.searchCursor, -1, total)
+				m.searchResultsScroll = adjustScroll(m.searchCursor, m.searchResultsScroll, visibleCount)
+			} else if msg.Type == tea.MouseWheelDown {
+				m.searchCursor = moveCursor(m.searchCursor, 1, total)
+				m.searchResultsScroll = adjustScroll(m.searchCursor, m.searchResultsScroll, visibleCount)
+			}
+			return m, nil
+		}
 	}
 
-	// Key routing with explicit precedence chain (follows Engram's model):
-	//   P0 — ctrl+c: global quit, always wins
-	//   P1 — confirm active: modal intercepts all keys
-	//   P2 — search input focused: textinput owns the stream
-	//   P3 — filter input focused: textinput owns the stream
-	//   P4 — viewport scrolling on capture screen
-	//   P5 — normal per-screen routing
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
-		// Non-key messages: forward viewport/input updates even for non-key msgs.
 		var cmd tea.Cmd
-		if m.screen == ScreenCapture {
+		if m.focus == FocusCaptureDetail && m.activeTab == TabSessions {
 			m.contentViewport, cmd = m.contentViewport.Update(msg)
 		}
 		return m, cmd
 	}
 
-	// P0 — global quit.
 	if key.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
 
-	// P1 — confirm dialog intercepts all keys.
 	if m.confirmActive {
 		return m.handleConfirmKeys(key)
 	}
 
-	// P2 — search input focused.
-	if m.screen == ScreenSearch && m.searchInput.Focused() {
+	if m.focus == FocusSearch && m.searchInput.Focused() && m.activeTab == TabSessions {
 		return m.handleSearchInputKeys(key)
 	}
 
-	// P3 — filter input focused.
-	if m.filterActive && m.filterInput.Focused() {
+	if m.filterActive && m.filterInput.Focused() && m.activeTab == TabSessions {
 		return m.handleFilterInputKeys(key)
 	}
 
-	// P4/P5 — screen routing.
-	switch m.screen {
-	case ScreenDashboard:
-		return m.updateDashboardKeys(key)
-	case ScreenSession:
-		return m.updateSessionKeys(key)
-	case ScreenCapture:
-		return m.updateCaptureKeys(key)
-	case ScreenSearch:
-		return m.updateSearchKeys(key)
-	case ScreenSearchResults:
-		return m.updateSearchResultsKeys(key)
-	default:
+	if key.String() == "tab" {
+		if m.activeTab == TabOverview {
+			m.activeTab = TabSessions
+		} else {
+			m.activeTab = TabOverview
+		}
 		return m, nil
+	}
+	if key.String() == "1" {
+		m.activeTab = TabOverview
+		return m, nil
+	}
+	if key.String() == "2" {
+		m.activeTab = TabSessions
+		return m, nil
+	}
+
+	if m.activeTab == TabSessions {
+		switch m.focus {
+		case FocusSessions:
+			return m.updateDashboardKeys(key)
+		case FocusCaptures:
+			return m.updateSessionKeys(key)
+		case FocusCaptureDetail:
+			return m.updateCaptureKeys(key)
+		case FocusSearch:
+			return m.updateSearchKeys(key)
+		case FocusSearchResults:
+			return m.updateSearchResultsKeys(key)
+		}
+	} else {
+		switch key.String() {
+		case "q":
+			return m, tea.Quit
+		}
+	}
+
+	return m, nil
+}
+
+func (m Model) focusFromRightPanel() FocusPane {
+	switch m.rightPanel {
+	case PanelCaptures:
+		return FocusCaptures
+	case PanelCaptureDetail:
+		return FocusCaptureDetail
+	case PanelSearch:
+		return FocusSearch
+	case PanelSearchResults:
+		return FocusSearchResults
+	default:
+		return FocusCaptures
 	}
 }
 
@@ -147,7 +229,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateDashboardKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	total := len(m.dashboardSessions)
-	visibleCount := m.height - 6
+	visibleCount := (m.height - 10) - 2
 	if visibleCount < 3 {
 		visibleCount = 3
 	}
@@ -161,17 +243,21 @@ func (m Model) updateDashboardKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		m.dashboardCursor = moveCursor(m.dashboardCursor, -1, total)
 		m.dashboardScroll = adjustScroll(m.dashboardCursor, m.dashboardScroll, visibleCount)
-	case "enter":
+	case "enter", "right", "l":
 		selected := m.selectedDashboardSession()
 		if selected == nil {
 			m.setStatus("No session selected")
 			return m, nil
 		}
+		if selected.ID == m.selectedSession && key.String() != "enter" {
+			m.focus = m.focusFromRightPanel()
+			return m, nil
+		}
 		m.loading = true
-		m.prevScreen = ScreenDashboard
+		m.prevPanel = PanelCaptures
 		m.selectedSession = selected.ID
 		return m, tea.Batch(loadSessionCmd(m.store, selected.ID), m.spinner.Tick)
-	case "/":
+	case "s":
 		return m.openSearchFromCurrentSelection()
 	}
 	return m, nil
@@ -182,18 +268,20 @@ func (m Model) updateDashboardKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateSessionKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	visible := m.filteredCaptures()
 	total := len(visible)
-	visibleCount := m.height - 7
-	if m.filterActive {
-		visibleCount--
-	}
+	visibleCount := (m.height - 10) - 8
 	if visibleCount < 3 {
 		visibleCount = 3
 	}
 
 	switch key.String() {
-	case "q", "esc":
-		// Both q and esc go back on child screens.
-		m.screen = ScreenDashboard
+	case "q", "esc", "left", "h":
+		if m.filterQuery != "" {
+			m.filterQuery = ""
+			m.sessionCursor = 0
+			m.sessionScroll = 0
+			return m, nil
+		}
+		m.focus = FocusSessions
 		m.deactivateFilter()
 		return m, nil
 	case "down", "j":
@@ -202,19 +290,20 @@ func (m Model) updateSessionKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		m.sessionCursor = moveCursor(m.sessionCursor, -1, total)
 		m.sessionScroll = adjustScroll(m.sessionCursor, m.sessionScroll, visibleCount)
-	case "enter":
+	case "enter", "right", "l":
 		selected := m.selectedSessionCaptureFromFiltered(visible)
 		if selected == nil {
 			m.setStatus("No output selected")
 			return m, nil
 		}
 		m.loading = true
-		m.prevScreen = ScreenSession
+		m.prevPanel = PanelCaptures
 		return m, tea.Batch(loadCaptureCmd(m.store, m.selectedSession, selected.Seq), m.spinner.Tick)
 	case "/":
-		return m.openSearchFromCurrentSelection()
-	case "f":
 		m.activateFilter()
+		return m, nil
+	case "s":
+		return m.openSearchFromCurrentSelection()
 	}
 	return m, nil
 }
@@ -222,17 +311,15 @@ func (m Model) updateSessionKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 // --- Capture ---
 
 func (m Model) updateCaptureKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Forward scrolling keys to the viewport.
 	var vpCmd tea.Cmd
 	m.contentViewport, vpCmd = m.contentViewport.Update(key)
 
 	switch key.String() {
-	case "q", "esc":
-		// BUG FIX: previously q on ScreenCapture called tea.Quit.
-		// Now both q and esc return to prevScreen, consistent with all other child screens.
-		m.screen = m.prevScreen
+	case "q", "esc", "left", "h":
+		m.rightPanel = m.prevPanel
+		m.focus = m.focusFromRightPanel()
 		return m, nil
-	case "/":
+	case "s":
 		return m.openSearchFromCurrentSelection()
 	case "home":
 		m.contentViewport.GotoTop()
@@ -244,12 +331,17 @@ func (m Model) updateCaptureKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, vpCmd
 }
 
-// --- Search input keys (P2 handler — textinput owns the stream) ---
+// --- Search input keys ---
 
 func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
-		m.screen = m.searchOrigin
+		if m.searchInput.Value() != "" {
+			m.searchInput.SetValue("")
+			return m, nil
+		}
+		m.rightPanel = m.searchOrigin
+		m.focus = m.focusFromRightPanel()
 		m.searchErr = ""
 		m.searchInput.Blur()
 		return m, nil
@@ -265,29 +357,26 @@ func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput.Blur()
 		return m, tea.Batch(loadSearchCmd(m.store, m.searchScope, query), m.spinner.Tick)
 	}
-	// All other keys: let the textinput consume them.
 	var cmd tea.Cmd
 	m.searchInput, cmd = m.searchInput.Update(key)
 	return m, cmd
 }
 
-// updateSearchKeys handles the ScreenSearch screen when input is NOT focused
-// (e.g. user navigated back to this screen without refocusing).
 func (m Model) updateSearchKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc", "q":
-		m.screen = m.searchOrigin
+		m.rightPanel = m.searchOrigin
+		m.focus = m.focusFromRightPanel()
 		m.searchErr = ""
 		m.searchInput.Blur()
 		return m, nil
 	default:
-		// Re-focus and forward the key.
 		m.searchInput.Focus()
 		return m.handleSearchInputKeys(key)
 	}
 }
 
-// --- Filter input keys (P3 handler — textinput owns the stream) ---
+// --- Filter input keys ---
 
 func (m Model) handleFilterInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
@@ -295,11 +384,9 @@ func (m Model) handleFilterInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.deactivateFilter()
 		return m, nil
 	case "enter":
-		// Confirm filter — keep results but blur input so navigation keys work.
 		m.filterInput.Blur()
 		return m, nil
 	}
-	// All other keys: update textinput and run client-side filter.
 	var cmd tea.Cmd
 	m.filterInput, cmd = m.filterInput.Update(key)
 	m.filterQuery = m.filterInput.Value()
@@ -312,14 +399,15 @@ func (m Model) handleFilterInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateSearchResultsKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	total := len(m.searchResults)
-	visibleCount := m.height - 8
+	visibleCount := (m.height - 10) - 7
 	if visibleCount < 3 {
 		visibleCount = 3
 	}
 
 	switch key.String() {
-	case "q", "esc":
-		m.screen = m.searchOrigin
+	case "q", "esc", "left", "h":
+		m.rightPanel = m.searchOrigin
+		m.focus = m.focusFromRightPanel()
 		return m, nil
 	case "down", "j":
 		m.searchCursor = moveCursor(m.searchCursor, 1, total)
@@ -327,19 +415,20 @@ func (m Model) updateSearchResultsKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		m.searchCursor = moveCursor(m.searchCursor, -1, total)
 		m.searchResultsScroll = adjustScroll(m.searchCursor, m.searchResultsScroll, visibleCount)
-	case "enter":
+	case "enter", "right", "l":
 		selected := m.selectedSearchResult()
 		if selected == nil {
 			m.setStatus("No result selected")
 			return m, nil
 		}
 		m.loading = true
-		m.prevScreen = ScreenSearchResults
+		m.prevPanel = PanelSearchResults
 		m.selectedSession = selected.Capture.SessionID
 		return m, tea.Batch(loadCaptureCmd(m.store, selected.Capture.SessionID, selected.Capture.Seq), m.spinner.Tick)
-	case "/":
-		m.screen = ScreenSearch
-		m.searchOrigin = ScreenSearchResults
+	case "s":
+		m.rightPanel = PanelSearch
+		m.focus = FocusSearch
+		m.searchOrigin = PanelSearchResults
 		m.searchInput.Focus()
 		m.searchInput.SetValue(m.searchQuery)
 		m.searchInput.CursorEnd()
@@ -362,7 +451,6 @@ func (m Model) handleConfirmKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
-	// No destructive actions defined yet — infrastructure only.
 	m.confirmActive = false
 	m.confirmMsg = ""
 	m.confirmAction = confirmNone
@@ -373,12 +461,12 @@ func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
 
 func (m Model) openSearchFromCurrentSelection() (tea.Model, tea.Cmd) {
 	scope := m.selectedSession
-	origin := m.screen
+	origin := m.rightPanel
 
 	if scope == "" {
 		if selected := m.selectedDashboardSession(); selected != nil {
 			scope = selected.ID
-			origin = ScreenDashboard
+			origin = PanelCaptures
 		}
 	}
 
@@ -389,7 +477,8 @@ func (m Model) openSearchFromCurrentSelection() (tea.Model, tea.Cmd) {
 
 	m.searchScope = scope
 	m.searchOrigin = origin
-	m.screen = ScreenSearch
+	m.rightPanel = PanelSearch
+	m.focus = FocusSearch
 	m.searchErr = ""
 	m.searchInput.Focus()
 	if strings.TrimSpace(m.searchQuery) == "" {

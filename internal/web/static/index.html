@@ -2,13 +2,13 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Context Bridge</title>
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
 
   <!-- Tailwind CDN -->
@@ -24,61 +24,76 @@
             mono: ['JetBrains Mono', 'monospace'],
           },
           colors: {
-            border:     'hsl(240 3.7% 15.9%)',
-            input:      'hsl(240 3.7% 15.9%)',
-            ring:       'hsl(240 4.9% 83.9%)',
-            background: 'hsl(240 10% 3.9%)',
-            foreground: 'hsl(0 0% 98%)',
-            primary:    { DEFAULT: 'hsl(0 0% 98%)',      foreground: 'hsl(240 5.9% 10%)' },
-            secondary:  { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(0 0% 98%)' },
-            muted:      { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(240 5% 64.9%)' },
-            accent:     { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(0 0% 98%)' },
-            card:       { DEFAULT: 'hsl(240 10% 3.9%)',   foreground: 'hsl(0 0% 98%)' },
-            surface:    '#2a273f',
-            'rp-base':    '#232136',
+            background: '#0a0a0c', 
+            card: '#121215',       
+            border: '#232136',     
+            muted: '#2a273f',      
+            foreground: '#e0def4', 
+            'rp-base': '#232136',
             'rp-surface': '#2a273f',
-            'rp-muted':   '#6e6a86',
-            'rp-subtle':  '#908caa',
-            'rp-text':    '#e0def4',
-            'rp-love':    '#eb6f92',
-            'rp-gold':    '#f6c177',
-            'rp-rose':    '#ea9a97',
-            'rp-foam':    '#9ccfd8',
-            'rp-iris':    '#c4a7e7',
-            'rp-pine':    '#3e8fb0',
-            'agent-grep':     '#9ccfd8',
-            'agent-explore':  '#3e8fb0',
+            'rp-muted': '#6e6a86',
+            'rp-subtle': '#908caa',
+            'rp-text': '#e0def4',
+            'rp-love': '#eb6f92',
+            'rp-gold': '#f6c177',
+            'rp-rose': '#ea9a97',
+            'rp-foam': '#9ccfd8',
+            'rp-iris': '#c4a7e7',
+            'rp-pine': '#3e8fb0',
+            'agent-grep': '#9ccfd8',
+            'agent-explore': '#3e8fb0',
             'agent-executor': '#f6c177',
             'agent-designer': '#c4a7e7',
-            'agent-general':  '#908caa',
-            'agent-triage':   '#eb6f92',
-            'agent-web':      '#ea9a97',
-            'chart-1': '#3b82f6',
-            'chart-2': '#10b981',
-            'chart-error': '#ef4444',
+            'agent-general': '#908caa',
+            'agent-triage': '#eb6f92',
+            'agent-web': '#ea9a97',
           },
         },
       },
     };
   </script>
 
+  <style type="text/tailwindcss">
+    @layer components {
+      .nav-item {
+        @apply flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-sm font-medium text-rp-subtle transition-all select-none;
+      }
+      .nav-item:hover {
+        @apply bg-muted/30 text-rp-text;
+      }
+      .nav-item.active {
+        @apply bg-muted/50 text-rp-iris;
+      }
+      .nav-item.active .nav-icon {
+        @apply text-rp-iris;
+      }
+      .nav-icon {
+        @apply text-[20px] transition-colors;
+      }
+      .mobile-nav-item.active {
+        @apply text-rp-iris;
+      }
+      .session-item {
+        @apply p-3 border-b border-border cursor-pointer transition-colors border-l-2 border-l-transparent hover:bg-muted/30;
+      }
+      .session-item.active {
+        @apply bg-muted/50 border-l-rp-iris hover:bg-muted/50;
+      }
+      .pulse-dot {
+        @apply w-2 h-2 rounded-full bg-emerald-500;
+        animation: pulse-glow 2s ease-in-out infinite;
+      }
+    }
+  </style>
+
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'Inter', sans-serif;
-      background: hsl(240 10% 3.9%);
-      color: hsl(0 0% 98%);
-      height: 100vh;
-      overflow: hidden;
-      display: flex;
-    }
-
+    
     /* Scrollbars */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: hsl(240 3.7% 20%); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: hsl(240 3.7% 30%); }
+    ::-webkit-scrollbar-thumb { background: #2a273f; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #6e6a86; }
 
     /* Material Icons align fix */
     .material-symbols-outlined {
@@ -87,544 +102,197 @@
       line-height: 1;
     }
 
-    /* Hero text */
-    .hero-text {
-      font-family: 'Space Grotesk', sans-serif;
-      font-weight: 700;
-      font-size: clamp(1.8rem, 4vw, 3rem);
-      letter-spacing: 0.15em;
-      color: #3e8fb0;
-      text-shadow: 0 0 40px rgba(62, 143, 176, 0.3);
-    }
-    .hero-sub {
-      font-family: 'JetBrains Mono', monospace;
-      color: #908caa;
-      font-size: 0.75rem;
-      letter-spacing: 0.2em;
-    }
-
-    /* Sidebar */
-    #sidebar {
-      width: 220px;
-      min-width: 220px;
-      background: hsl(240 8% 5.5%);
-      border-right: 1px solid hsl(240 3.7% 12%);
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-      z-index: 20;
-    }
-
-    .nav-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 16px;
-      border-radius: 8px;
-      margin: 2px 8px;
-      cursor: pointer;
-      color: #908caa;
-      font-size: 0.875rem;
-      font-weight: 500;
-      transition: all 0.15s ease;
-      user-select: none;
-    }
-    .nav-item:hover { background: hsl(240 3.7% 12%); color: #e0def4; }
-    .nav-item.active { background: hsl(240 3.7% 15.9%); color: #c4a7e7; }
-    .nav-item.active .nav-icon { color: #c4a7e7; }
-
-    /* Main content */
-    #main {
-      flex: 1;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-
-    /* Top bar */
-    #topbar {
-      height: 52px;
-      min-height: 52px;
-      border-bottom: 1px solid hsl(240 3.7% 12%);
-      display: flex;
-      align-items: center;
-      padding: 0 20px;
-      gap: 12px;
-      background: hsl(240 10% 3.9%);
-    }
-
-    /* Page content */
-    #page {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px;
-    }
-
-    /* Cards */
-    .stat-card {
-      background: hsl(240 8% 6.5%);
-      border: 1px solid hsl(240 3.7% 13%);
-      border-radius: 12px;
-      padding: 20px;
-      transition: border-color 0.2s;
-    }
-    .stat-card:hover { border-color: #3e8fb0; }
-
-    /* Tables */
-    .data-table { width: 100%; border-collapse: collapse; }
-    .data-table th {
-      text-align: left;
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #6e6a86;
-      padding: 8px 12px;
-      border-bottom: 1px solid hsl(240 3.7% 12%);
-    }
-    .data-table td {
-      padding: 10px 12px;
-      font-size: 0.8rem;
-      border-bottom: 1px solid hsl(240 3.7% 9%);
-      vertical-align: middle;
-    }
-    .data-table tbody tr { cursor: pointer; transition: background 0.12s; }
-    .data-table tbody tr:hover td { background: hsl(240 3.7% 9%); }
-    .data-table tbody tr.selected td { background: hsl(240 3.7% 12%); }
-
-    /* Agent badge */
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 0.65rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      font-family: 'JetBrains Mono', monospace;
-      white-space: nowrap;
-    }
-
-    /* Split pane */
-    .split-container {
-      display: flex;
-      gap: 0;
-      height: calc(100vh - 52px - 48px);
-      overflow: hidden;
-    }
-    .split-left {
-      width: 280px;
-      min-width: 280px;
-      border-right: 1px solid hsl(240 3.7% 12%);
-      overflow-y: auto;
-      flex-shrink: 0;
-    }
-    .split-right {
-      flex: 1;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-
-    /* Session list items */
-    .session-item {
-      padding: 12px 16px;
-      border-bottom: 1px solid hsl(240 3.7% 9%);
-      cursor: pointer;
-      transition: background 0.12s;
-    }
-    .session-item:hover { background: hsl(240 3.7% 9%); }
-    .session-item.active { background: hsl(240 3.7% 13%); border-left: 2px solid #c4a7e7; }
-
-    /* Capture list items */
-    .capture-item {
-      padding: 12px 16px;
-      border-bottom: 1px solid hsl(240 3.7% 9%);
-      cursor: pointer;
-      transition: background 0.12s;
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-    }
-    .capture-item:hover { background: hsl(240 3.7% 9%); }
-
-    /* Content pre block */
-    .content-pre {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.72rem;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      word-break: break-word;
-      color: #e0def4;
-      padding: 20px;
-      overflow-y: auto;
-      flex: 1;
-    }
-
-    /* Search */
-    .search-input {
-      background: hsl(240 3.7% 10%);
-      border: 1px solid hsl(240 3.7% 18%);
-      border-radius: 8px;
-      padding: 10px 14px;
-      color: #e0def4;
-      font-family: 'Inter', sans-serif;
-      font-size: 0.875rem;
-      outline: none;
-      width: 100%;
-      transition: border-color 0.15s;
-    }
-    .search-input:focus { border-color: #3e8fb0; }
-    .search-input::placeholder { color: #6e6a86; }
-
-    select.search-input { cursor: pointer; }
-
-    /* Snippet highlight */
-    .snippet-match { color: #f6c177; font-weight: 600; background: rgba(246, 193, 119, 0.12); border-radius: 2px; padding: 0 2px; }
-
-    /* Loading spinner */
     .spinner {
       display: inline-block;
-      width: 16px; height: 16px;
-      border: 2px solid hsl(240 3.7% 20%);
+      width: 18px; height: 18px;
+      border: 2px solid #2a273f;
       border-top-color: #3e8fb0;
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Empty state */
-    .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-      height: 100%;
-      color: #6e6a86;
-      font-size: 0.875rem;
-    }
-    .empty-state .material-symbols-outlined { font-size: 48px; opacity: 0.4; }
-
-    /* Pulse dot */
-    .pulse-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: #10b981;
-      animation: pulse-glow 2s ease-in-out infinite;
-    }
     @keyframes pulse-glow {
       0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
       50% { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
     }
 
-    /* Mono text */
-    .mono { font-family: 'JetBrains Mono', monospace; }
-
-    /* Section heading */
-    .section-heading {
-      font-family: 'Space Grotesk', sans-serif;
-      font-weight: 600;
-      font-size: 0.8rem;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: #6e6a86;
-      margin-bottom: 12px;
-    }
-
-    /* Scrollable areas */
-    .scroll-y { overflow-y: auto; }
-
-    /* Buttons */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 7px 14px;
-      border-radius: 8px;
-      font-size: 0.8rem;
-      font-weight: 500;
-      cursor: pointer;
-      border: none;
-      transition: all 0.15s;
-      font-family: 'Inter', sans-serif;
-    }
-    .btn-ghost {
-      background: transparent;
-      color: #908caa;
-      border: 1px solid hsl(240 3.7% 18%);
-    }
-    .btn-ghost:hover { background: hsl(240 3.7% 12%); color: #e0def4; }
-    .btn-primary {
-      background: hsl(240 3.7% 15.9%);
-      color: #e0def4;
-    }
-    .btn-primary:hover { background: hsl(240 3.7% 20%); }
-
-    /* Mobile bottom nav */
-    @media (max-width: 768px) {
-      #sidebar { display: none; }
-      #mobile-nav { display: flex; }
-      #page { padding: 16px; }
-      .split-container { flex-direction: column; height: auto; }
-      .split-left { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid hsl(240 3.7% 12%); height: 200px; }
-    }
-
-    #mobile-nav {
-      display: none;
-      position: fixed;
-      bottom: 0; left: 0; right: 0;
-      background: hsl(240 8% 5.5%);
-      border-top: 1px solid hsl(240 3.7% 12%);
-      z-index: 50;
-      justify-content: space-around;
-      padding: 8px 0;
-    }
-    .mobile-nav-item {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2px;
-      padding: 4px 16px;
-      cursor: pointer;
-      color: #6e6a86;
-      font-size: 0.6rem;
-      font-weight: 500;
-    }
-    .mobile-nav-item.active { color: #c4a7e7; }
-    .mobile-nav-item .material-symbols-outlined { font-size: 22px; }
-
-    /* Separator */
-    .sep { border: none; border-top: 1px solid hsl(240 3.7% 12%); margin: 8px 0; }
-
-    /* Back header */
-    .back-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 16px;
-      border-bottom: 1px solid hsl(240 3.7% 12%);
-      cursor: pointer;
-      transition: background 0.12s;
-    }
-    .back-header:hover { background: hsl(240 3.7% 9%); }
-
-    /* Search result card */
-    .search-result-card {
-      background: hsl(240 8% 6.5%);
-      border: 1px solid hsl(240 3.7% 13%);
-      border-radius: 10px;
-      padding: 14px 16px;
-      cursor: pointer;
-      transition: border-color 0.15s, background 0.15s;
-      margin-bottom: 10px;
-    }
-    .search-result-card:hover { border-color: #3e8fb0; background: hsl(240 8% 8%); }
-
-    /* Tooltip-like overflow ID */
-    .id-pill {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.68rem;
-      color: #9ccfd8;
-      background: rgba(156, 207, 216, 0.08);
-      border-radius: 4px;
-      padding: 1px 6px;
-    }
-
-    /* Auto-refresh indicator */
-    #refresh-indicator {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.7rem;
-      color: #6e6a86;
-    }
+    .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
   </style>
 </head>
-<body class="bg-background text-foreground">
+<body class="bg-background text-foreground flex h-screen overflow-hidden font-body text-sm antialiased">
 
   <!-- ═══════════════════════════════════════════════════════ SIDEBAR -->
-  <nav id="sidebar">
+  <nav id="sidebar" class="w-56 lg:w-64 shrink-0 bg-card border-r border-border flex flex-col h-screen z-20 hidden md:flex shadow-xl">
     <!-- Brand -->
-    <div style="padding: 18px 16px 14px; border-bottom: 1px solid hsl(240 3.7% 12%);">
-      <div style="display: flex; align-items: center; gap: 10px;">
-        <span class="material-symbols-outlined" style="color: #3e8fb0; font-size: 22px;">terminal</span>
-        <span style="font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 0.9rem; color: #e0def4; letter-spacing: 0.05em;">Context Bridge</span>
+    <div class="p-5 border-b border-border">
+      <div class="flex items-center gap-2.5">
+        <span class="material-symbols-outlined text-rp-pine text-[24px]">terminal</span>
+        <span class="font-heading font-bold text-[0.95rem] text-rp-text tracking-wide">Context Bridge</span>
       </div>
-      <div style="font-size: 0.62rem; color: #6e6a86; margin-top: 4px; font-family: 'JetBrains Mono', monospace; padding-left: 32px;">Output capture &amp; search</div>
+      <div class="text-[0.65rem] text-rp-muted mt-1.5 font-mono pl-8 tracking-wider">Output capture &amp; search</div>
     </div>
 
     <!-- Nav items -->
-    <div style="padding: 8px 0; flex: 1;">
+    <div class="py-4 flex-1 flex flex-col gap-1.5 px-3">
       <div class="nav-item active" id="nav-overview" onclick="navigate('overview')">
-        <span class="material-symbols-outlined nav-icon" style="font-size: 19px;">dashboard</span>
-        Overview
+        <span class="material-symbols-outlined nav-icon">dashboard</span> Overview
       </div>
       <div class="nav-item" id="nav-sessions" onclick="navigate('sessions')">
-        <span class="material-symbols-outlined nav-icon" style="font-size: 19px;">folder_open</span>
-        Sessions
+        <span class="material-symbols-outlined nav-icon">folder_open</span> Sessions
       </div>
       <div class="nav-item" id="nav-search" onclick="navigate('search')">
-        <span class="material-symbols-outlined nav-icon" style="font-size: 19px;">search</span>
-        Search
+        <span class="material-symbols-outlined nav-icon">search</span> Search
       </div>
 
-      <hr class="sep" style="margin: 12px 8px;" />
+      <hr class="border-border my-2 mx-2" />
 
-      <div class="nav-item" onclick="void(0)" style="opacity: 0.5; cursor: not-allowed;">
-        <span class="material-symbols-outlined nav-icon" style="font-size: 19px;">add_circle</span>
-        New Session
+      <div class="nav-item opacity-50 cursor-not-allowed">
+        <span class="material-symbols-outlined nav-icon">add_circle</span> New Session
       </div>
     </div>
 
     <!-- Footer -->
-    <div style="padding: 12px 16px; border-top: 1px solid hsl(240 3.7% 12%);">
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+    <div class="p-4 border-t border-border bg-card">
+      <div class="flex items-center gap-2 mb-2">
         <div class="pulse-dot"></div>
-        <span style="font-size: 0.72rem; color: #908caa;">SQLite connected</span>
+        <span class="text-[0.7rem] text-rp-subtle font-medium">SQLite connected</span>
       </div>
-      <div style="font-size: 0.65rem; color: #6e6a86; font-family: 'JetBrains Mono', monospace;" id="version-footer">context-bridge</div>
+      <div class="text-[0.65rem] text-rp-muted font-mono" id="version-footer">context-bridge</div>
     </div>
   </nav>
 
   <!-- ═══════════════════════════════════════════════════════ MAIN -->
-  <div id="main">
+  <div id="main" class="flex-1 flex flex-col min-w-0 h-screen overflow-hidden bg-background">
 
     <!-- Top bar -->
-    <div id="topbar">
-      <span id="topbar-title" style="font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 0.95rem; color: #e0def4;">Overview</span>
-      <div style="flex: 1;"></div>
-      <div id="refresh-indicator">
-        <span class="material-symbols-outlined" style="font-size: 14px;">autorenew</span>
-        <span id="refresh-countdown">10s</span>
+    <div id="topbar" class="h-14 shrink-0 border-b border-border flex items-center px-4 md:px-6 gap-3 bg-background/90 backdrop-blur z-10">
+      <span id="topbar-title" class="font-heading font-semibold text-rp-text text-base tracking-wide">Overview</span>
+      <div class="flex-1"></div>
+      <div id="refresh-indicator" class="flex items-center gap-1.5 text-[0.7rem] text-rp-muted bg-muted/20 px-2.5 py-1 rounded-full border border-border hidden sm:flex">
+        <span class="material-symbols-outlined text-[14px]">autorenew</span>
+        <span id="refresh-countdown" class="font-mono w-4 text-center">10s</span>
       </div>
-      <button class="btn btn-ghost" onclick="refreshCurrent()" style="padding: 5px 10px;">
-        <span class="material-symbols-outlined" style="font-size: 16px;">refresh</span>
-        Refresh
+      <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-rp-subtle border border-border hover:bg-muted/50 hover:text-rp-text transition-colors" onclick="refreshCurrent()">
+        <span class="material-symbols-outlined text-[16px]">refresh</span> Refresh
       </button>
     </div>
 
     <!-- Page content -->
-    <div id="page">
+    <div id="page" class="flex-1 flex flex-col overflow-y-auto bg-background relative">
 
       <!-- ═══════════ VIEW: OVERVIEW -->
-      <div id="view-overview">
-
+      <div id="view-overview" class="flex-1 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto w-full space-y-8">
+        
         <!-- Hero -->
-        <div style="text-align: center; padding: 32px 0 28px; position: relative;">
-          <div class="hero-text">CONTEXT BRIDGE</div>
-          <div class="hero-sub" style="margin-top: 6px;">[ output capture &amp; semantic search for AI agents ]</div>
-          <div style="display: flex; justify-content: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #6e6a86;">
-            <span style="color: #9ccfd8;">grep</span> <span>·</span>
-            <span style="color: #3e8fb0;">explore</span> <span>·</span>
-            <span style="color: #f6c177;">executor</span> <span>·</span>
-            <span style="color: #c4a7e7;">designer</span> <span>·</span>
-            <span style="color: #908caa;">general</span> <span>·</span>
-            <span style="color: #eb6f92;">triage</span> <span>·</span>
-            <span style="color: #ea9a97;">web</span>
+        <div class="text-center py-6 md:py-10 relative">
+          <h1 class="font-heading font-bold text-3xl md:text-4xl lg:text-5xl tracking-widest text-rp-pine mb-3 drop-shadow-[0_0_30px_rgba(62,143,176,0.3)]">CONTEXT BRIDGE</h1>
+          <div class="font-mono text-rp-subtle text-[0.7rem] md:text-xs tracking-[0.2em] mb-6">[ output capture &amp; semantic search for AI agents ]</div>
+          <div class="flex justify-center gap-2 md:gap-3 flex-wrap font-mono text-[0.65rem] md:text-xs text-rp-muted">
+            <span class="text-agent-grep bg-agent-grep/10 px-2 py-0.5 rounded border border-agent-grep/20">grep</span>
+            <span class="text-agent-explore bg-agent-explore/10 px-2 py-0.5 rounded border border-agent-explore/20">explore</span>
+            <span class="text-agent-executor bg-agent-executor/10 px-2 py-0.5 rounded border border-agent-executor/20">executor</span>
+            <span class="text-agent-designer bg-agent-designer/10 px-2 py-0.5 rounded border border-agent-designer/20">designer</span>
+            <span class="text-agent-general bg-agent-general/10 px-2 py-0.5 rounded border border-agent-general/20">general</span>
+            <span class="text-agent-triage bg-agent-triage/10 px-2 py-0.5 rounded border border-agent-triage/20">triage</span>
+            <span class="text-agent-web bg-agent-web/10 px-2 py-0.5 rounded border border-agent-web/20">web</span>
           </div>
         </div>
 
         <!-- Stats cards -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 28px;" id="stats-grid">
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="stats-grid">
           <!-- Filled by JS -->
-          <div class="stat-card" style="display: flex; align-items: center; justify-content: center; min-height: 90px;">
+          <div class="bg-card border border-border rounded-xl p-5 flex items-center justify-center min-h-[100px] col-span-2 lg:col-span-4">
             <div class="spinner"></div>
           </div>
         </div>
 
         <!-- Recent sessions -->
         <div>
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
-            <div class="section-heading" style="margin-bottom: 0;">Recent Sessions</div>
-            <button class="btn btn-ghost" style="font-size: 0.72rem; padding: 4px 10px;" onclick="navigate('sessions')">
-              View all <span class="material-symbols-outlined" style="font-size: 13px;">arrow_forward</span>
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="font-heading font-semibold text-xs md:text-sm tracking-widest uppercase text-rp-muted">Recent Sessions</h2>
+            <button class="flex items-center gap-1 text-[0.7rem] md:text-xs font-medium text-rp-subtle hover:text-rp-text transition-colors" onclick="navigate('sessions')">
+              View all <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
             </button>
           </div>
-          <div style="background: hsl(240 8% 6.5%); border: 1px solid hsl(240 3.7% 13%); border-radius: 12px; overflow: hidden;">
-            <div id="recent-sessions-table">
-              <div style="display: flex; align-items: center; justify-content: center; padding: 40px; gap: 10px; color: #6e6a86; font-size: 0.8rem;">
-                <div class="spinner"></div> Loading sessions...
-              </div>
+          <div class="bg-card border border-border rounded-xl overflow-hidden shadow-sm" id="recent-sessions-table">
+            <div class="flex items-center justify-center p-10 gap-3 text-rp-muted text-sm">
+              <div class="spinner"></div> Loading sessions...
             </div>
           </div>
         </div>
       </div>
 
       <!-- ═══════════ VIEW: SESSIONS -->
-      <div id="view-sessions" style="display: none; margin: -24px;">
-        <div class="split-container">
-
-          <!-- Left: session list -->
-          <div class="split-left" style="display: flex; flex-direction: column;">
-            <div style="padding: 14px 16px; border-bottom: 1px solid hsl(240 3.7% 12%); display: flex; align-items: center; justify-content: space-between;">
-              <span class="section-heading" style="margin-bottom: 0;">Sessions</span>
-              <span id="session-count" style="font-size: 0.7rem; color: #6e6a86; font-family: 'JetBrains Mono', monospace;"></span>
-            </div>
-            <div id="session-list" style="flex: 1; overflow-y: auto;">
-              <div style="display: flex; align-items: center; justify-content: center; padding: 40px; gap: 10px; color: #6e6a86; font-size: 0.8rem;">
-                <div class="spinner"></div>
-              </div>
+      <div id="view-sessions" style="display: none;" class="flex-1 flex flex-col md:flex-row overflow-hidden w-full">
+        <!-- Left: session list -->
+        <div class="w-full md:w-72 lg:w-80 shrink-0 border-b md:border-b-0 md:border-r border-border flex flex-col h-[40vh] md:h-full bg-background/50 relative">
+          <div class="p-3.5 border-b border-border flex items-center justify-between shrink-0 bg-background sticky top-0 z-10">
+            <h2 class="font-heading font-semibold text-[0.75rem] tracking-widest uppercase text-rp-muted m-0">Sessions</h2>
+            <span id="session-count" class="text-[0.65rem] text-rp-muted font-mono bg-muted/30 px-2 py-0.5 rounded"></span>
+          </div>
+          <div id="session-list" class="flex-1 overflow-y-auto">
+            <div class="flex items-center justify-center p-10 gap-3 text-rp-muted text-sm">
+              <div class="spinner"></div>
             </div>
           </div>
+        </div>
 
-          <!-- Right: captures or detail -->
-          <div class="split-right" id="session-right-panel">
-            <div class="empty-state">
-              <span class="material-symbols-outlined">folder_open</span>
-              <span>Select a session to view its outputs</span>
-              <span style="font-size: 0.72rem; color: #6e6a86;">Click any session on the left</span>
-            </div>
+        <!-- Right: captures or detail -->
+        <div class="flex-1 flex flex-col min-h-0 bg-card" id="session-right-panel">
+          <div class="flex flex-col items-center justify-center h-full gap-3 text-rp-muted text-sm">
+            <span class="material-symbols-outlined text-4xl opacity-40">folder_open</span>
+            <span>Select a session to view its outputs</span>
+            <span class="text-[0.7rem] text-rp-subtle">Click any session on the left</span>
           </div>
-
         </div>
       </div>
 
       <!-- ═══════════ VIEW: SEARCH -->
-      <div id="view-search" style="display: none;">
-        <div style="max-width: 800px;">
-          <div class="section-heading">Search Outputs</div>
+      <div id="view-search" style="display: none;" class="flex-1 p-4 md:p-6 lg:p-8 max-w-5xl mx-auto w-full flex flex-col">
+        <h2 class="font-heading font-semibold text-[0.75rem] tracking-widest uppercase text-rp-muted mb-5 shrink-0">Search Outputs</h2>
 
-          <div style="display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
-            <select id="search-session-select" class="search-input" style="max-width: 320px; flex: 1;" onchange="onSearchSessionChange()">
+        <div class="flex flex-col sm:flex-row gap-3 mb-6 shrink-0">
+          <div class="relative sm:max-w-[16rem] flex-1">
+            <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-rp-muted text-[18px] pointer-events-none">folder</span>
+            <select id="search-session-select" class="w-full bg-muted/20 border border-border rounded-lg pl-9 pr-8 py-2.5 text-[0.8rem] text-rp-text font-medium appearance-none focus:outline-none focus:border-rp-pine focus:ring-1 focus:ring-rp-pine/50 transition-all cursor-pointer truncate" onchange="onSearchSessionChange()">
               <option value="">Loading sessions...</option>
             </select>
-            <div style="flex: 1; position: relative; min-width: 200px;">
-              <input type="text" id="search-input" class="search-input" placeholder="Regex or keywords…" onkeydown="if(event.key==='Enter') runSearch()" />
-            </div>
-            <button class="btn btn-primary" onclick="runSearch()" style="flex-shrink: 0;">
-              <span class="material-symbols-outlined" style="font-size: 16px;">search</span>
-              Search
-            </button>
+            <span class="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 text-rp-muted text-[18px] pointer-events-none">expand_more</span>
           </div>
+          <div class="flex-1 relative">
+            <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-rp-muted text-[18px] pointer-events-none">manage_search</span>
+            <input type="text" id="search-input" class="w-full bg-muted/20 border border-border rounded-lg pl-9 pr-4 py-2.5 text-[0.8rem] text-rp-text placeholder:text-rp-muted focus:outline-none focus:border-rp-pine focus:ring-1 focus:ring-rp-pine/50 transition-all" placeholder="Regex or keywords…" onkeydown="if(event.key==='Enter') runSearch()" />
+          </div>
+          <button class="flex items-center justify-center gap-2 bg-rp-pine text-[#131316] font-semibold px-5 py-2.5 rounded-lg hover:bg-rp-pine/90 active:scale-95 transition-all shrink-0 text-[0.85rem]" onclick="runSearch()">
+            <span class="material-symbols-outlined text-[18px]">search</span> Search
+          </button>
+        </div>
 
-          <div id="search-results">
-            <div class="empty-state" style="height: 200px;">
-              <span class="material-symbols-outlined">manage_search</span>
-              <span>Enter a search query to find outputs</span>
-            </div>
+        <div id="search-results" class="flex-1 overflow-y-auto pb-8">
+          <div class="flex flex-col items-center justify-center h-48 gap-3 text-rp-muted text-sm border border-dashed border-border rounded-xl bg-card/30">
+            <span class="material-symbols-outlined text-4xl opacity-40">manage_search</span>
+            <span>Enter a search query to find outputs</span>
           </div>
         </div>
       </div>
 
     </div><!-- /page -->
-  </div><!-- /main -->
 
-  <!-- Mobile bottom nav -->
-  <nav id="mobile-nav">
-    <div class="mobile-nav-item active" id="mnav-overview" onclick="navigate('overview')">
-      <span class="material-symbols-outlined">dashboard</span>
-      Overview
-    </div>
-    <div class="mobile-nav-item" id="mnav-sessions" onclick="navigate('sessions')">
-      <span class="material-symbols-outlined">folder_open</span>
-      Sessions
-    </div>
-    <div class="mobile-nav-item" id="mnav-search" onclick="navigate('search')">
-      <span class="material-symbols-outlined">search</span>
-      Search
-    </div>
-  </nav>
+    <!-- Mobile bottom nav -->
+    <nav id="mobile-nav" class="md:hidden shrink-0 bg-card border-t border-border flex justify-around p-1.5 pb-safe z-50 shadow-[0_-4px_20px_rgba(0,0,0,0.3)]">
+      <div class="mobile-nav-item active flex flex-col items-center gap-1 p-2 text-rp-muted text-[0.65rem] font-medium rounded-lg hover:bg-muted/20 transition-colors w-16" id="mnav-overview" onclick="navigate('overview')">
+        <span class="material-symbols-outlined text-[22px]">dashboard</span> Overview
+      </div>
+      <div class="mobile-nav-item flex flex-col items-center gap-1 p-2 text-rp-muted text-[0.65rem] font-medium rounded-lg hover:bg-muted/20 transition-colors w-16" id="mnav-sessions" onclick="navigate('sessions')">
+        <span class="material-symbols-outlined text-[22px]">folder_open</span> Sessions
+      </div>
+      <div class="mobile-nav-item flex flex-col items-center gap-1 p-2 text-rp-muted text-[0.65rem] font-medium rounded-lg hover:bg-muted/20 transition-colors w-16" id="mnav-search" onclick="navigate('search')">
+        <span class="material-symbols-outlined text-[22px]">search</span> Search
+      </div>
+    </nav>
+
+  </div><!-- /main -->
 
 <script>
 // ═══════════════════════════════════════════════════════════════ STATE
@@ -685,27 +353,28 @@ function truncateId(id, maxLen = 20) {
   return prefix + '…' + suffix;
 }
 
-const AGENT_COLORS = {
-  grep:     '#9ccfd8',
-  explore:  '#3e8fb0',
-  executor: '#f6c177',
-  designer: '#c4a7e7',
-  general:  '#908caa',
-  triage:   '#eb6f92',
-  web:      '#ea9a97',
-};
-
-function agentColor(agent) {
-  if (!agent) return '#6e6a86';
-  const key = agent.toLowerCase().split('-')[0].split('/')[0];
-  return AGENT_COLORS[key] || '#6e6a86';
+function agentColorClass(agent) {
+  const key = agent ? agent.toLowerCase().split('-')[0].split('/')[0] : '';
+  const valid = ['grep', 'explore', 'executor', 'designer', 'general', 'triage', 'web'];
+  if (valid.includes(key)) return `agent-${key}`;
+  return 'rp-muted'; // fallback
 }
 
 function agentBadgeHtml(agent, small = false) {
-  const color = agentColor(agent);
+  const key = agent ? agent.toLowerCase().split('-')[0].split('/')[0] : '';
+  let colorClasses = 'text-rp-muted bg-rp-muted/10 border-rp-muted/30';
+  switch(key) {
+    case 'grep': colorClasses = 'text-agent-grep bg-agent-grep/10 border-agent-grep/30'; break;
+    case 'explore': colorClasses = 'text-agent-explore bg-agent-explore/10 border-agent-explore/30'; break;
+    case 'executor': colorClasses = 'text-agent-executor bg-agent-executor/10 border-agent-executor/30'; break;
+    case 'designer': colorClasses = 'text-agent-designer bg-agent-designer/10 border-agent-designer/30'; break;
+    case 'general': colorClasses = 'text-agent-general bg-agent-general/10 border-agent-general/30'; break;
+    case 'triage': colorClasses = 'text-agent-triage bg-agent-triage/10 border-agent-triage/30'; break;
+    case 'web': colorClasses = 'text-agent-web bg-agent-web/10 border-agent-web/30'; break;
+  }
   const label = agent || 'unknown';
-  const size = small ? 'font-size: 0.6rem; padding: 1px 6px;' : 'font-size: 0.65rem; padding: 2px 8px;';
-  return `<span class="badge" style="${size} background: ${color}18; color: ${color}; border: 1px solid ${color}40;">${escHtml(label)}</span>`;
+  const size = small ? 'text-[0.6rem] px-1.5 py-0.5' : 'text-[0.65rem] px-2 py-0.5';
+  return `<span class="inline-flex items-center rounded-full font-mono font-semibold tracking-wide border ${colorClasses} ${size}">${escHtml(label)}</span>`;
 }
 
 function escHtml(str) {
@@ -719,10 +388,9 @@ function escHtml(str) {
 function highlightSnippet(snippet, query) {
   if (!query || !snippet) return escHtml(snippet || '');
   try {
-    const re = new RegExp(`(${query})`, 'gi');
     return escHtml(snippet).replace(
       new RegExp(escHtml(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
-      m => `<mark class="snippet-match">${m}</mark>`
+      m => `<mark class="bg-rp-gold/20 text-rp-gold rounded px-1 font-semibold">${m}</mark>`
     );
   } catch(e) {
     return escHtml(snippet);
@@ -730,14 +398,14 @@ function highlightSnippet(snippet, query) {
 }
 
 function spinnerHtml(msg = '') {
-  return `<div style="display:flex;align-items:center;gap:10px;color:#6e6a86;font-size:0.8rem;padding:20px 12px;">
+  return `<div class="flex items-center justify-center gap-3 p-6 text-rp-muted text-sm">
     <div class="spinner"></div>${msg ? escHtml(msg) : ''}
   </div>`;
 }
 
 function errorHtml(msg) {
-  return `<div style="display:flex;align-items:center;gap:8px;color:#eb6f92;font-size:0.8rem;padding:16px 12px;">
-    <span class="material-symbols-outlined" style="font-size:18px;">error</span>${escHtml(msg)}
+  return `<div class="flex items-center gap-2 p-4 text-rp-love text-[0.8rem] bg-rp-love/10 border border-rp-love/20 rounded-lg m-4 shadow-sm">
+    <span class="material-symbols-outlined text-lg">error</span>${escHtml(msg)}
   </div>`;
 }
 
@@ -790,8 +458,8 @@ function navigate(view) {
 
   // Show/hide views
   document.getElementById('view-overview').style.display = view === 'overview' ? 'block' : 'none';
-  document.getElementById('view-sessions').style.display = view === 'sessions' ? 'block' : 'none';
-  document.getElementById('view-search').style.display  = view === 'search'   ? 'block' : 'none';
+  document.getElementById('view-sessions').style.display = view === 'sessions' ? 'flex' : 'none';
+  document.getElementById('view-search').style.display  = view === 'search'   ? 'flex' : 'none';
 
   // Topbar title
   const titles = { overview: 'Overview', sessions: 'Sessions', search: 'Search' };
@@ -827,40 +495,19 @@ async function loadOverview() {
 
 function renderStatsCards(stats) {
   const cards = [
-    {
-      icon: 'folder',
-      label: 'Total Sessions',
-      value: stats.sessions ?? 0,
-      color: '#3e8fb0',
-    },
-    {
-      icon: 'output',
-      label: 'Total Outputs',
-      value: stats.captures ?? 0,
-      color: '#c4a7e7',
-    },
-    {
-      icon: 'database',
-      label: 'Storage Used',
-      value: formatBytes(stats.total_bytes ?? 0),
-      color: '#f6c177',
-      mono: true,
-    },
-    {
-      icon: 'check_circle',
-      label: 'Database Status',
-      value: 'Connected',
-      color: '#10b981',
-    },
+    { icon: 'folder', label: 'Total Sessions', value: stats.sessions ?? 0, color: 'text-rp-pine' },
+    { icon: 'output', label: 'Total Outputs', value: stats.captures ?? 0, color: 'text-rp-iris' },
+    { icon: 'database', label: 'Storage Used', value: formatBytes(stats.total_bytes ?? 0), color: 'text-rp-gold', mono: true },
+    { icon: 'check_circle', label: 'Database Status', value: 'Connected', color: 'text-emerald-500' },
   ];
 
   document.getElementById('stats-grid').innerHTML = cards.map(c => `
-    <div class="stat-card">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
-        <span class="material-symbols-outlined" style="color:${c.color};font-size:20px;">${c.icon}</span>
-        <span style="font-size:0.72rem;color:#6e6a86;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;">${c.label}</span>
+    <div class="bg-card border border-border rounded-xl p-5 hover:border-rp-pine/40 transition-colors duration-300 shadow-sm group">
+      <div class="flex items-center gap-2.5 mb-3">
+        <span class="material-symbols-outlined ${c.color} text-[22px] group-hover:scale-110 transition-transform">${c.icon}</span>
+        <span class="text-[0.7rem] text-rp-muted font-semibold tracking-wider uppercase">${c.label}</span>
       </div>
-      <div style="font-family:${c.mono ? "'JetBrains Mono', monospace" : "'Space Grotesk', sans-serif"};font-weight:700;font-size:1.6rem;color:${c.color};">${escHtml(String(c.value))}</div>
+      <div class="${c.mono ? 'font-mono' : 'font-heading'} font-bold text-2xl md:text-3xl ${c.color}">${escHtml(String(c.value))}</div>
     </div>
   `).join('');
 }
@@ -868,40 +515,44 @@ function renderStatsCards(stats) {
 function renderRecentSessions(sessions) {
   if (!sessions || sessions.length === 0) {
     document.getElementById('recent-sessions-table').innerHTML = `
-      <div class="empty-state" style="height:120px;">
-        <span class="material-symbols-outlined" style="font-size:32px;">inbox</span>
+      <div class="flex flex-col items-center justify-center h-32 gap-2 text-rp-muted text-sm">
+        <span class="material-symbols-outlined text-3xl opacity-40">inbox</span>
         <span>No sessions yet</span>
       </div>`;
     return;
   }
 
   const rows = sessions.map(s => `
-    <tr onclick="navigate('sessions');selectSession('${escHtml(s.id)}')">
-      <td>
-        <span class="id-pill" title="${escHtml(s.id)}">${escHtml(truncateId(s.id))}</span>
+    <tr class="group cursor-pointer border-b border-border hover:bg-muted/30 transition-colors" onclick="navigate('sessions');selectSession('${escHtml(s.id)}')">
+      <td class="p-3.5 align-middle">
+        <span class="inline-block font-mono text-[0.7rem] text-rp-foam bg-rp-foam/10 px-2 py-1 rounded" title="${escHtml(s.id)}">${escHtml(truncateId(s.id))}</span>
       </td>
-      <td style="color:#908caa;text-align:center;">
-        <span style="font-family:'JetBrains Mono',monospace;font-weight:600;color:#ea9a97;">${s.capture_count ?? 0}</span>
+      <td class="p-3.5 align-middle text-center">
+        <span class="font-mono font-semibold text-rp-rose bg-rp-rose/10 px-2.5 py-0.5 rounded text-[0.75rem]">${s.capture_count ?? 0}</span>
       </td>
-      <td style="color:#6e6a86;font-size:0.75rem;">${escHtml(formatRelativeTime(s.last_captured_at))}</td>
-      <td style="color:#6e6a86;font-size:0.75rem;">${escHtml(formatDateTime(s.created_at))}</td>
-      <td>${s.deleted_at ? '<span style="color:#eb6f92;font-size:0.7rem;">deleted</span>' : '<span style="color:#10b981;font-size:0.7rem;">active</span>'}</td>
+      <td class="p-3.5 align-middle text-[0.75rem] text-rp-muted">${escHtml(formatRelativeTime(s.last_captured_at))}</td>
+      <td class="p-3.5 align-middle text-[0.75rem] text-rp-muted hidden sm:table-cell">${escHtml(formatDateTime(s.created_at))}</td>
+      <td class="p-3.5 align-middle">
+        ${s.deleted_at ? '<span class="text-[0.7rem] text-rp-love font-medium px-2 py-0.5 bg-rp-love/10 rounded">Deleted</span>' : '<span class="text-[0.7rem] text-emerald-500 font-medium px-2 py-0.5 bg-emerald-500/10 rounded">Active</span>'}
+      </td>
     </tr>
   `).join('');
 
   document.getElementById('recent-sessions-table').innerHTML = `
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Session ID</th>
-          <th style="text-align:center;">Outputs</th>
-          <th>Last Activity</th>
-          <th>Created</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <div class="overflow-x-auto">
+      <table class="w-full text-left border-collapse whitespace-nowrap">
+        <thead>
+          <tr class="border-b border-border bg-background/50">
+            <th class="p-3.5 text-[0.7rem] font-semibold tracking-wider uppercase text-rp-subtle">Session ID</th>
+            <th class="p-3.5 text-[0.7rem] font-semibold tracking-wider uppercase text-rp-subtle text-center">Outputs</th>
+            <th class="p-3.5 text-[0.7rem] font-semibold tracking-wider uppercase text-rp-subtle">Last Activity</th>
+            <th class="p-3.5 text-[0.7rem] font-semibold tracking-wider uppercase text-rp-subtle hidden sm:table-cell">Created</th>
+            <th class="p-3.5 text-[0.7rem] font-semibold tracking-wider uppercase text-rp-subtle">Status</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 // ═══════════════════════════════════════════════════════════════ SESSIONS VIEW
@@ -926,27 +577,30 @@ function renderSessionList(sessions) {
   if (countEl) countEl.textContent = sessions.length + ' sessions';
 
   if (!sessions || sessions.length === 0) {
-    el.innerHTML = `<div class="empty-state" style="height:200px;">
-      <span class="material-symbols-outlined">folder_open</span>
+    el.innerHTML = `<div class="flex flex-col items-center justify-center h-48 gap-3 text-rp-muted text-sm">
+      <span class="material-symbols-outlined text-4xl opacity-40">folder_open</span>
       <span>No sessions captured yet</span>
     </div>`;
     return;
   }
 
-  el.innerHTML = sessions.map(s => `
-    <div class="session-item ${state.selectedSession === s.id ? 'active' : ''}"
+  el.innerHTML = sessions.map(s => {
+    const isActive = state.selectedSession === s.id;
+    const activeClasses = isActive ? 'active' : '';
+    return `
+    <div class="session-item ${activeClasses}"
          id="sitem-${CSS.escape(s.id)}"
          onclick="selectSession('${escHtml(s.id)}')">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
-        <span class="id-pill" style="font-size:0.65rem;" title="${escHtml(s.id)}">${escHtml(truncateId(s.id, 18))}</span>
-        ${s.deleted_at ? '<span style="color:#eb6f92;font-size:0.62rem;flex-shrink:0;">deleted</span>' : ''}
+      <div class="flex justify-between items-start gap-2 mb-2">
+        <span class="inline-block font-mono text-[0.65rem] text-rp-foam bg-rp-foam/10 px-1.5 py-0.5 rounded truncate" title="${escHtml(s.id)}">${escHtml(truncateId(s.id, 18))}</span>
+        ${s.deleted_at ? '<span class="text-[0.62rem] text-rp-love bg-rp-love/10 px-1 py-0.5 rounded shrink-0">deleted</span>' : ''}
       </div>
-      <div style="display:flex;justify-content:space-between;margin-top:6px;align-items:center;">
-        <span style="font-size:0.7rem;color:#6e6a86;">${escHtml(formatRelativeTime(s.last_captured_at))}</span>
-        <span style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;color:#ea9a97;background:rgba(234,154,151,0.1);padding:1px 6px;border-radius:4px;">${s.capture_count ?? 0}</span>
+      <div class="flex justify-between items-center">
+        <span class="text-[0.7rem] text-rp-muted">${escHtml(formatRelativeTime(s.last_captured_at))}</span>
+        <span class="font-mono text-[0.65rem] text-rp-rose bg-rp-rose/10 px-1.5 py-0.5 rounded-md">${s.capture_count ?? 0}</span>
       </div>
     </div>
-  `).join('');
+  `}).join('');
 }
 
 async function selectSession(sessionId) {
@@ -977,44 +631,44 @@ function renderCaptureList(captures, sessionId) {
   const rightPanel = document.getElementById('session-right-panel');
 
   if (!captures || captures.length === 0) {
-    rightPanel.innerHTML = `<div class="empty-state">
-      <span class="material-symbols-outlined">inbox</span>
+    rightPanel.innerHTML = `<div class="flex flex-col items-center justify-center h-full gap-3 text-rp-muted text-sm">
+      <span class="material-symbols-outlined text-4xl opacity-40">inbox</span>
       <span>No captures in this session</span>
     </div>`;
     return;
   }
 
   const header = `
-    <div style="padding:14px 16px;border-bottom:1px solid hsl(240 3.7% 12%);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
-      <div style="display:flex;align-items:center;gap:10px;">
-        <span class="material-symbols-outlined" style="color:#3e8fb0;font-size:18px;">output</span>
-        <span style="font-family:'Space Grotesk',sans-serif;font-size:0.85rem;font-weight:600;color:#e0def4;">
+    <div class="p-3.5 border-b border-border flex items-center justify-between shrink-0 bg-card sticky top-0 z-10">
+      <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-rp-pine text-[18px]">output</span>
+        <span class="font-heading text-[0.85rem] font-semibold text-rp-text">
           ${captures.length} capture${captures.length !== 1 ? 's' : ''}
         </span>
       </div>
-      <span class="id-pill" title="${escHtml(sessionId)}">${escHtml(truncateId(sessionId, 22))}</span>
+      <span class="font-mono text-[0.65rem] text-rp-foam bg-rp-foam/10 px-2 py-1 rounded" title="${escHtml(sessionId)}">${escHtml(truncateId(sessionId, 22))}</span>
     </div>`;
 
   const items = captures.map(c => `
-    <div class="capture-item" onclick="viewCapture('${escHtml(sessionId)}', ${c.seq})">
-      <div style="flex-shrink:0;font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:#6e6a86;padding-top:3px;width:24px;text-align:right;">#${c.seq}</div>
-      <div style="flex:1;min-width:0;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap;">
+    <div class="flex items-start gap-3 p-4 border-b border-border cursor-pointer hover:bg-muted/30 transition-colors group" onclick="viewCapture('${escHtml(sessionId)}', ${c.seq})">
+      <div class="shrink-0 font-mono text-[0.65rem] text-rp-muted pt-1 w-6 text-right">#${c.seq}</div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
           ${agentBadgeHtml(c.agent)}
-          <span style="font-size:0.72rem;color:#6e6a86;flex-shrink:0;">${escHtml(formatRelativeTime(c.captured_at))}</span>
-          <span style="font-size:0.68rem;color:#6e6a86;flex-shrink:0;font-family:'JetBrains Mono',monospace;">${escHtml(formatBytes(c.bytes))}</span>
+          <span class="text-[0.7rem] text-rp-muted shrink-0">${escHtml(formatRelativeTime(c.captured_at))}</span>
+          <span class="text-[0.65rem] text-rp-muted shrink-0 font-mono">${escHtml(formatBytes(c.bytes))}</span>
         </div>
-        <div style="font-size:0.78rem;color:#c4a7e7;font-weight:500;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(c.description || '(no description)')}</div>
-        <div style="font-size:0.7rem;color:#6e6a86;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'JetBrains Mono',monospace;">${escHtml(c.preview || '')}</div>
+        <div class="text-[0.8rem] text-rp-iris font-medium mb-1 truncate">${escHtml(c.description || '(no description)')}</div>
+        <div class="text-[0.7rem] text-rp-muted truncate font-mono">${escHtml(c.preview || '')}</div>
       </div>
-      <span class="material-symbols-outlined" style="font-size:16px;color:#6e6a86;flex-shrink:0;margin-top:2px;">chevron_right</span>
+      <span class="material-symbols-outlined text-rp-muted shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[18px]">chevron_right</span>
     </div>
   `).join('');
 
   rightPanel.innerHTML = `
-    <div style="display:flex;flex-direction:column;height:100%;overflow:hidden;">
+    <div class="flex flex-col h-full overflow-hidden relative">
       ${header}
-      <div style="flex:1;overflow-y:auto;">${items}</div>
+      <div class="flex-1 overflow-y-auto">${items}</div>
     </div>`;
 }
 
@@ -1033,34 +687,31 @@ async function viewCapture(sessionId, seq) {
 
 function renderCaptureDetail(capture, sessionId) {
   const rightPanel = document.getElementById('session-right-panel');
-  const color = agentColor(capture.agent);
 
   rightPanel.innerHTML = `
-    <div style="display:flex;flex-direction:column;height:100%;overflow:hidden;">
-
+    <div class="flex flex-col h-full overflow-hidden">
       <!-- Back header -->
-      <div class="back-header" onclick="selectSession('${escHtml(sessionId)}')">
-        <span class="material-symbols-outlined" style="font-size:18px;color:#908caa;">arrow_back</span>
-        <span style="font-size:0.8rem;color:#908caa;">Back to captures</span>
+      <div class="flex items-center gap-2 p-3.5 border-b border-border cursor-pointer hover:bg-muted/30 transition-colors shrink-0 bg-card" onclick="selectSession('${escHtml(sessionId)}')">
+        <span class="material-symbols-outlined text-rp-subtle text-[18px]">arrow_back</span>
+        <span class="text-[0.8rem] text-rp-subtle font-medium">Back to captures</span>
       </div>
 
       <!-- Capture meta -->
-      <div style="padding:14px 18px;border-bottom:1px solid hsl(240 3.7% 12%);background:hsl(240 8% 5.5%);">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
-          <span style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${color};font-size:0.8rem;">Output #${capture.seq}</span>
+      <div class="p-4 border-b border-border bg-background/50 shrink-0 shadow-sm">
+        <div class="flex items-center gap-3 mb-2.5 flex-wrap">
+          <span class="font-mono font-semibold text-[0.8rem] text-rp-text">Output #${capture.seq}</span>
           ${agentBadgeHtml(capture.agent)}
-          <span style="font-size:0.72rem;color:#6e6a86;font-family:'JetBrains Mono',monospace;">${escHtml(formatBytes(capture.bytes))}</span>
-          <span style="font-size:0.72rem;color:#6e6a86;">${escHtml(formatDateTime(capture.captured_at))}</span>
+          <span class="text-[0.7rem] text-rp-muted font-mono">${escHtml(formatBytes(capture.bytes))}</span>
+          <span class="text-[0.7rem] text-rp-muted">${escHtml(formatDateTime(capture.captured_at))}</span>
         </div>
-        <div style="font-size:0.85rem;color:#e0def4;font-weight:500;margin-bottom:4px;">${escHtml(capture.description || '(no description)')}</div>
-        ${capture.child_session_id ? `<div style="font-size:0.68rem;color:#6e6a86;font-family:'JetBrains Mono',monospace;">child: <span style="color:#9ccfd8;">${escHtml(capture.child_session_id)}</span></div>` : ''}
+        <div class="text-[0.85rem] text-rp-text font-medium mb-1">${escHtml(capture.description || '(no description)')}</div>
+        ${capture.child_session_id ? `<div class="text-[0.7rem] text-rp-muted font-mono mt-2">child: <span class="text-rp-foam bg-rp-foam/10 px-1.5 py-0.5 rounded">${escHtml(capture.child_session_id)}</span></div>` : ''}
       </div>
 
       <!-- Content -->
-      <div style="flex:1;overflow:hidden;position:relative;">
-        <pre class="content-pre" style="height:100%;">${escHtml(capture.content || '')}</pre>
+      <div class="flex-1 overflow-hidden relative bg-[#0e0d11]">
+        <pre class="font-mono text-[0.75rem] leading-relaxed text-rp-text p-5 h-full overflow-y-auto whitespace-pre-wrap break-words">${escHtml(capture.content || '')}</pre>
       </div>
-
     </div>`;
 }
 
@@ -1108,8 +759,8 @@ async function runSearch() {
 
   if (!query) {
     document.getElementById('search-results').innerHTML = `
-      <div class="empty-state" style="height:150px;">
-        <span class="material-symbols-outlined">manage_search</span>
+      <div class="flex flex-col items-center justify-center h-48 gap-3 text-rp-muted text-sm border border-dashed border-border rounded-xl bg-card/30">
+        <span class="material-symbols-outlined text-4xl opacity-40">manage_search</span>
         <span>Enter a search query</span>
       </div>`;
     return;
@@ -1136,33 +787,34 @@ function renderSearchResults(results, sessionId, query) {
   const el = document.getElementById('search-results');
 
   if (!results || results.length === 0) {
-    el.innerHTML = `<div class="empty-state" style="height:200px;">
-      <span class="material-symbols-outlined">search_off</span>
+    el.innerHTML = `<div class="flex flex-col items-center justify-center h-48 gap-3 text-rp-muted text-sm border border-dashed border-border rounded-xl bg-card/30">
+      <span class="material-symbols-outlined text-4xl opacity-40">search_off</span>
       <span>No matches found for "${escHtml(query)}"</span>
     </div>`;
     return;
   }
 
-  const header = `<div style="font-size:0.75rem;color:#6e6a86;margin-bottom:16px;">
-    Found <span style="color:#9ccfd8;font-weight:600;">${results.length}</span> result${results.length !== 1 ? 's' : ''} for
-    <span style="color:#f6c177;font-family:'JetBrains Mono',monospace;">${escHtml(query)}</span>
+  const header = `<div class="text-[0.8rem] text-rp-muted mb-4 flex items-center gap-2">
+    Found <span class="text-rp-foam font-semibold bg-rp-foam/10 px-1.5 rounded">${results.length}</span> result${results.length !== 1 ? 's' : ''} for
+    <span class="text-rp-gold font-mono bg-rp-gold/10 px-1.5 rounded">${escHtml(query)}</span>
   </div>`;
 
   const cards = results.map(r => {
     const c = r.capture;
     return `
-      <div class="search-result-card" onclick="jumpToCapture('${escHtml(sessionId)}', ${c.seq})">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
-          <span style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;color:#6e6a86;">#${c.seq}</span>
+      <div class="bg-card border border-border rounded-xl p-4 cursor-pointer hover:border-rp-pine/40 hover:bg-muted/10 transition-all mb-3 shadow-sm group" onclick="jumpToCapture('${escHtml(sessionId)}', ${c.seq})">
+        <div class="flex items-center gap-2.5 mb-3 flex-wrap">
+          <span class="font-mono text-[0.7rem] text-rp-muted bg-rp-muted/10 px-1.5 py-0.5 rounded">#${c.seq}</span>
           ${agentBadgeHtml(c.agent, true)}
-          <span style="font-size:0.68rem;color:#6e6a86;">${escHtml(formatRelativeTime(c.captured_at))}</span>
-          <span style="font-size:0.68rem;color:#6e6a86;font-family:'JetBrains Mono',monospace;">${escHtml(formatBytes(c.bytes))}</span>
-          <span style="margin-left:auto;font-size:0.65rem;color:#f6c177;font-family:'JetBrains Mono',monospace;">
+          <span class="text-[0.7rem] text-rp-muted">${escHtml(formatRelativeTime(c.captured_at))}</span>
+          <span class="text-[0.65rem] text-rp-muted font-mono">${escHtml(formatBytes(c.bytes))}</span>
+          <span class="ml-auto text-[0.65rem] text-rp-gold font-mono bg-rp-gold/10 px-2 py-0.5 rounded-full flex items-center gap-1 border border-rp-gold/20">
+            <span class="material-symbols-outlined text-[14px]">match_case</span>
             ${r.match_count} match${r.match_count !== 1 ? 'es' : ''}
           </span>
         </div>
-        <div style="font-size:0.8rem;color:#c4a7e7;font-weight:500;margin-bottom:8px;">${escHtml(c.description || '(no description)')}</div>
-        <pre style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;line-height:1.6;color:#908caa;background:hsl(240 10% 3.9%);border:1px solid hsl(240 3.7% 12%);border-radius:6px;padding:10px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;">${highlightSnippet(r.snippet, query)}</pre>
+        <div class="text-[0.85rem] text-rp-iris font-medium mb-2.5 group-hover:text-rp-pine transition-colors">${escHtml(c.description || '(no description)')}</div>
+        <pre class="font-mono text-[0.7rem] leading-relaxed text-rp-subtle bg-[#0e0d11] border border-border rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words">${highlightSnippet(r.snippet, query)}</pre>
       </div>`;
   }).join('');
 

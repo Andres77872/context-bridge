@@ -17,6 +17,7 @@ import (
 	"context-bridge/internal/server"
 	"context-bridge/internal/store"
 	"context-bridge/internal/tui"
+	"context-bridge/internal/web"
 )
 
 var version = "dev"
@@ -43,6 +44,8 @@ func run(args []string) error {
 		return cmdTUI(args[1:])
 	case "migrate":
 		return cmdMigrate(args[1:])
+	case "web":
+		return cmdWeb(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -146,6 +149,22 @@ func cmdMigrate(args []string) error {
 	return nil
 }
 
+func cmdWeb(args []string) error {
+	fs := flag.NewFlagSet("web", flag.ContinueOnError)
+	addr := fs.String("addr", envOrDefault("CONTEXT_BRIDGE_WEB_ADDR", "127.0.0.1:7440"), "Web dashboard listen address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	return web.Run(st, *addr, version)
+}
+
 func openStore() (*store.Store, error) {
 	return store.Open(defaultDBPath())
 }
@@ -199,6 +218,7 @@ Usage:
   context-bridge serve    Start HTTP server for the thin OpenCode plugin
   context-bridge mcp      Start MCP stdio server for agent-facing tools
   context-bridge tui      Start read-only terminal browser
+  context-bridge web      Start web dashboard (default: 127.0.0.1:7440)
   context-bridge migrate  Import legacy manifest + markdown data
   context-bridge version  Print version`)
 }

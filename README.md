@@ -47,28 +47,52 @@ which opencode  # or wherever OpenCode is installed
 
 ## Installation
 
-### 1. Build and install the binary
+### Quick Install (recommended)
+
+Install the latest release binary:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Andres77872/context-bridge/main/script/install.sh | sh
+```
+
+This installs the binary to `${XDG_BIN_HOME:-$HOME/.local/bin}`.
+
+Verify:
+
+```bash
+context-bridge version
+```
+
+### Environment overrides
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `VERSION` | `latest` | Pin to specific release, e.g. `v0.2.0` |
+| `INSTALL_DIR` | `$HOME/.local/bin` | Override binary destination |
+| `NO_CHECKSUM` | `0` | Set to `1` to skip checksum verification |
+
+### Smart update behavior
+
+The installer detects your installed version and compares it with the latest remote release:
+
+- **Already latest** — skips reinstall, exits cleanly
+- **Remote newer** — updates to latest
+- **Local newer** — warns and skips (dev build scenario)
+
+To force reinstall when local is newer, set `VERSION` explicitly:
+
+```bash
+VERSION=v0.3.0 curl -sSL https://raw.githubusercontent.com/.../install.sh | sh
+```
+
+### Build from source
 
 ```bash
 cd /path/to/context-bridge
 go install ./cmd/context-bridge
 ```
 
-Verify:
-
-```bash
-context-bridge version
-# dev (or version number)
-```
-
-### 2. Copy the plugin
-
-```bash
-mkdir -p ~/.config/opencode/plugins
-cp plugin/opencode/context-bridge.ts ~/.config/opencode/plugins/
-```
-
-### 3. Configure OpenCode
+### Configure OpenCode
 
 Add to `~/.config/opencode/opencode.json`:
 
@@ -437,7 +461,6 @@ Key components:
 
 - **No cross-session search** — Search is scoped to one session tree
 - **No purge/retention** — Data is retained forever (no TTL)
-- **No release packaging** — Build from source; no goreleaser yet
 - **No destructive actions in TUI** — Delete buttons exist but aren't wired
 
 ## Related Projects

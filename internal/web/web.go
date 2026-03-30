@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -416,7 +418,7 @@ func (s *Server) rootSessionExists(id string) (bool, error) {
 	return false, nil
 }
 
-func Run(st *store.Store, addr, version string, searchMode store.SearchMode, configPath string) error {
+func Run(st *store.Store, addr, version string, searchMode store.SearchMode, configPath string, openBrowser bool) error {
 	srv := New(st, searchMode, configPath)
 	httpServer := &http.Server{
 		Addr:              addr,
@@ -425,6 +427,12 @@ func Run(st *store.Store, addr, version string, searchMode store.SearchMode, con
 	}
 
 	fmt.Printf("Context Bridge dashboard → http://%s\n", addr)
+
+	if openBrowser {
+		if err := openURL("http://" + addr); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to open browser: %v\n", err)
+		}
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -444,6 +452,23 @@ func Run(st *store.Store, addr, version string, searchMode store.SearchMode, con
 	case err := <-errCh:
 		return err
 	}
+}
+
+func openURL(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

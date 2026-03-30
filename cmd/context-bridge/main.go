@@ -149,6 +149,7 @@ func cmdTUI(args []string) error {
 func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	addr := fs.String("addr", envOrDefault("CONTEXT_BRIDGE_WEB_ADDR", "127.0.0.1:7440"), "Web dashboard listen address")
+	open := fs.Bool("open", true, "Open browser automatically")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -165,7 +166,7 @@ func cmdWeb(args []string) error {
 	}
 	defer st.Close()
 
-	return web.Run(st, *addr, version, store.SearchMode(cfg.SearchMode), cfgPath)
+	return web.Run(st, *addr, version, store.SearchMode(cfg.SearchMode), cfgPath, *open)
 }
 
 func openStore() (*store.Store, error) {
@@ -212,6 +213,7 @@ Usage:
   context-bridge mcp      Start MCP stdio server for agent-facing tools
   context-bridge tui      Start read-only terminal browser
   context-bridge web      Start web dashboard (default: 127.0.0.1:7440)
+                          Flags: --addr, --open (default: true)
   context-bridge uninstall Remove project-owned binaries and integrations
   context-bridge version  Print version`)
 }

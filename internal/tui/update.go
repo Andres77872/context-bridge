@@ -221,6 +221,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.confirmActive {
 		return m.handleConfirmKeys(key)
 	}
+	if m.settingsActive {
+		return m.handleSettingsKeys(key)
+	}
+	if key.String() == "p" {
+		m.activateSettings()
+		return m, nil
+	}
 
 	if m.focus == FocusSearch && m.searchInput.Focused() && (m.activeTab == TabSessions || m.activeTab == TabSearch) {
 		return m.handleSearchInputKeys(key)
@@ -455,7 +462,7 @@ func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchErr = ""
 		m.searchQuery = query
 		m.searchInput.Blur()
-		return m, tea.Batch(loadSearchCmd(m.store, m.searchScope, query), m.spinner.Tick)
+		return m, tea.Batch(loadSearchCmd(m.store, m.searchScope, query, m.searchMode), m.spinner.Tick)
 	}
 	var cmd tea.Cmd
 	m.searchInput, cmd = m.searchInput.Update(key)
@@ -541,6 +548,20 @@ func (m Model) handleConfirmKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmMsg = ""
 		m.confirmMeta = nil
 		m.confirmAction = confirmNone
+	}
+	return m, nil
+}
+
+func (m Model) handleSettingsKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc", "q":
+		m.closeSettings()
+	case "up", "k":
+		m.settingsCursor = moveCursor(m.settingsCursor, -1, 2)
+	case "down", "j":
+		m.settingsCursor = moveCursor(m.settingsCursor, 1, 2)
+	case "enter":
+		_ = m.saveSettingsSelection()
 	}
 	return m, nil
 }

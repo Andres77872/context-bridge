@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"context-bridge/internal/config"
 	"context-bridge/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,7 +50,7 @@ func TestDashboardEnterLoadsSession(t *testing.T) {
 	st := openTestStore(t)
 	seedSession(t, st, "ses_root", []seedCapture{{seq: 1, agent: "grep", desc: "first capture", content: "hello world"}})
 
-	m := New(st)
+	m := New(st, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.dashboardSessions = []store.SessionSummary{{ID: "ses_root", CaptureCount: 1, LastCapturedAt: time.Now().UTC()}}
 	m.dashboardCursor = 0
@@ -80,7 +81,7 @@ func TestSearchEnterLoadsResults(t *testing.T) {
 	st := openTestStore(t)
 	seedSession(t, st, "ses_root", []seedCapture{{seq: 1, agent: "grep", desc: "find auth", content: "auth bug appears here"}})
 
-	m := New(st)
+	m := New(st, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.rightPanel = PanelSearch
 	m.focus = FocusSearch
@@ -111,7 +112,7 @@ func TestSearchEnterLoadsResults(t *testing.T) {
 }
 
 func TestSearchRequiresSelectionFromDashboard(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusSessions
 
@@ -127,7 +128,7 @@ func TestSearchRequiresSelectionFromDashboard(t *testing.T) {
 }
 
 func TestEscapeFromCaptureReturnsPreviousScreen(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptureDetail
 	m.prevPanel = PanelCaptures
@@ -144,7 +145,7 @@ func TestEscapeFromCaptureReturnsPreviousScreen(t *testing.T) {
 
 func TestQuitOnCaptureGoesBack(t *testing.T) {
 	// BUG FIX: previously q on FocusCaptureDetail quit the app. Now it goes back.
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptureDetail
 	m.prevPanel = PanelCaptures
@@ -165,7 +166,7 @@ func TestQuitOnCaptureGoesBack(t *testing.T) {
 }
 
 func TestQuitOnDashboardQuitsApp(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusSessions
 
@@ -181,7 +182,7 @@ func TestQuitOnDashboardQuitsApp(t *testing.T) {
 
 func TestSearchInputBlurredOnNavAway(t *testing.T) {
 	// After pressing esc on FocusSearch, searchInput must be blurred if empty.
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusSearch
 	m.searchOrigin = PanelCaptures
@@ -204,7 +205,7 @@ func TestSearchInputBlurredOnNavAway(t *testing.T) {
 }
 
 func TestQOnSessionGoesBackToDashboard(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptures
 	m.selectedSession = "ses_abc"
@@ -218,7 +219,7 @@ func TestQOnSessionGoesBackToDashboard(t *testing.T) {
 }
 
 func TestEscOnSearchResultsGoesBackToOrigin(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusSearchResults
 	m.searchOrigin = PanelCaptures
@@ -234,7 +235,7 @@ func TestEscOnSearchResultsGoesBackToOrigin(t *testing.T) {
 // ---- Phase 5: inline filter ----
 
 func TestFilterActivatesOnSlashKey(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{
@@ -253,7 +254,7 @@ func TestFilterActivatesOnSlashKey(t *testing.T) {
 }
 
 func TestFilterEscClearsFilter(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{
@@ -280,7 +281,7 @@ func TestFilterEscClearsFilter(t *testing.T) {
 }
 
 func TestFilterClientSide(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.sessionCaptures = []store.CaptureRecord{
 		{Seq: 1, Agent: "grep", Description: "search files"},
 		{Seq: 2, Agent: "explore", Description: "explore code"},
@@ -320,7 +321,7 @@ func TestFilterClientSide(t *testing.T) {
 // ---- Phase 7: confirm layer blocks navigation ----
 
 func TestConfirmGatesKeyRouting(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep"}}
@@ -340,7 +341,7 @@ func TestConfirmGatesKeyRouting(t *testing.T) {
 }
 
 func TestConfirmNClosesDialog(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.focus = FocusCaptures
 	m.confirmActive = true
 	m.confirmMsg = "Delete this session?"
@@ -355,7 +356,7 @@ func TestConfirmNClosesDialog(t *testing.T) {
 }
 
 func TestConfirmEscClosesDialog(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.confirmActive = true
 	m.confirmMsg = "Are you sure?"
 
@@ -371,7 +372,7 @@ func TestConfirmDeleteSessionAction(t *testing.T) {
 	st := openTestStore(t)
 	seedSession(t, st, "ses_delete", []seedCapture{{seq: 1, agent: "grep", desc: "test", content: "hello"}})
 
-	m := New(st)
+	m := New(st, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusSessions
 	m.dashboardSessions = []store.SessionSummary{{ID: "ses_delete"}}
@@ -409,7 +410,7 @@ func TestConfirmDeleteCaptureAction(t *testing.T) {
 		{seq: 2, agent: "explore", desc: "test 2", content: "world"},
 	})
 
-	m := New(st)
+	m := New(st, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{
@@ -446,7 +447,7 @@ func TestConfirmDeleteCaptureAction(t *testing.T) {
 // ---- Stats loading ----
 
 func TestStatsLoadedUpdatesModel(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	stats := store.StoreStats{Sessions: 5, Captures: 42, TotalBytes: 1024}
 
 	updated, _ := m.Update(statsLoadedMsg{stats: stats})
@@ -463,7 +464,7 @@ func TestStatsLoadedUpdatesModel(t *testing.T) {
 // ---- Scroll state ----
 
 func TestDashboardScrollFollowsCursor(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.height = 10 // visibleCount = 10 - 6 = 4
 
@@ -539,7 +540,7 @@ func withDimensions(m Model, w, h int) Model {
 }
 
 func TestDashboardEmptyStateHasHelpText(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	output := m.viewOverviewTab(100, 20)
 	if !strings.Contains(output, "Run `context-bridge serve`") {
 		t.Fatalf("empty dashboard must mention 'Run `context-bridge serve`', got:\n%s", output)
@@ -547,7 +548,7 @@ func TestDashboardEmptyStateHasHelpText(t *testing.T) {
 }
 
 func TestDashboardShowsStatsCard(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.stats = store.StoreStats{Sessions: 3, Captures: 12, TotalBytes: 2048}
 	m.dashboardSessions = []store.SessionSummary{{ID: "ses_abc", CaptureCount: 12, CreatedAt: time.Now()}}
 	output := m.viewOverviewTab(100, 20)
@@ -560,7 +561,7 @@ func TestDashboardShowsStatsCard(t *testing.T) {
 }
 
 func TestSessionFilterBarVisibleWhenActive(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep", Description: "test"}}
 	m.activateFilter()
@@ -571,7 +572,7 @@ func TestSessionFilterBarVisibleWhenActive(t *testing.T) {
 }
 
 func TestSessionFilterBarPersistent(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep", Description: "test"}}
 	output := m.viewSession(100, 20)
@@ -585,7 +586,7 @@ func TestSessionFilterBarPersistent(t *testing.T) {
 }
 
 func TestScrollIndicatorVisibleWhenOverflow(t *testing.T) {
-	m := withDimensions(New(nil), 120, 10) // height=10 → visibleCount=2
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 10) // height=10 → visibleCount=2
 	sessions := make([]store.SessionSummary, 20)
 	for i := range sessions {
 		sessions[i] = store.SessionSummary{ID: fmt.Sprintf("ses_%02d", i), CreatedAt: time.Now()}
@@ -598,7 +599,7 @@ func TestScrollIndicatorVisibleWhenOverflow(t *testing.T) {
 }
 
 func TestCaptureScreenShowsAgentBadge(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.focus = FocusCaptureDetail
 	m.selectedCapture = &store.CaptureRecord{
 		Seq:         3,
@@ -616,7 +617,7 @@ func TestCaptureScreenShowsAgentBadge(t *testing.T) {
 }
 
 func TestHelpTextChangesWhenFiltered(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.focus = FocusCaptures
 	m.sessionCaptures = []store.CaptureRecord{{Seq: 1, Agent: "grep"}}
 
@@ -633,7 +634,7 @@ func TestHelpTextChangesWhenFiltered(t *testing.T) {
 }
 
 func TestStatusBarShowsErrorWhenSet(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.errorMsg = "database connection failed"
 	output := m.renderStatusBar()
 	if !strings.Contains(output, "database connection failed") {
@@ -642,7 +643,7 @@ func TestStatusBarShowsErrorWhenSet(t *testing.T) {
 }
 
 func TestConfirmDialogAppearsWhenActive(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.activeTab = TabSessions // Ensure we are in a tab that renders the right pane
 	m.confirmActive = true
 	m.confirmMsg = "Delete everything?"
@@ -655,8 +656,130 @@ func TestConfirmDialogAppearsWhenActive(t *testing.T) {
 	}
 }
 
+func TestSettingsKeybindingOpensDialog(t *testing.T) {
+	m := New(nil, store.SearchModeRegex)
+	m.activeTab = TabOverview
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model := updated.(Model)
+
+	if !model.settingsActive {
+		t.Fatal("expected settings dialog to open on p")
+	}
+	if model.settingsCursor != 0 {
+		t.Fatalf("expected regex cursor selection, got %d", model.settingsCursor)
+	}
+}
+
+func TestSettingsDialogAppearsWhenActive(t *testing.T) {
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
+	m.settingsActive = true
+	output := m.View()
+
+	if !strings.Contains(output, "Global search engine for all TUI searches") {
+		t.Fatalf("settings dialog must describe global behavior, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Regex") || !strings.Contains(output, "FTS5") {
+		t.Fatalf("settings dialog must show both engine options, got:\n%s", output)
+	}
+}
+
+func TestSettingsSaveUpdatesModeAndPersistsConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "context-bridge", "config.json")
+	m := New(nil, store.SearchModeRegex)
+	m.configPath = configPath
+	m.activeTab = TabSessions
+	m.focus = FocusCaptures
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model := updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if model.settingsActive {
+		t.Fatal("expected settings dialog to close after successful save")
+	}
+	if model.searchMode != store.SearchModeFTS5 {
+		t.Fatalf("expected in-memory mode to update to fts5, got %q", model.searchMode)
+	}
+
+	cfg, err := config.LoadConfig(configPath, true)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if cfg.SearchMode != config.SearchModeFTS5 {
+		t.Fatalf("expected saved mode %q, got %q", config.SearchModeFTS5, cfg.SearchMode)
+	}
+}
+
+func TestSettingsCancelDoesNotChangeMode(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "context-bridge", "config.json")
+	m := New(nil, store.SearchModeRegex)
+	m.configPath = configPath
+	m.activeTab = TabSessions
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model := updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+
+	if model.settingsActive {
+		t.Fatal("expected settings dialog to close on esc")
+	}
+	if model.searchMode != store.SearchModeRegex {
+		t.Fatalf("expected mode to remain regex after cancel, got %q", model.searchMode)
+	}
+	if _, err := config.LoadConfig(configPath, true); err == nil {
+		t.Fatal("cancel should not persist a config file")
+	}
+}
+
+func TestSettingsSaveImmediatelyAffectsSearchMode(t *testing.T) {
+	st := openTestStore(t)
+	seedSession(t, st, "ses_root", []seedCapture{{seq: 1, agent: "grep", desc: "multi-line", content: "alpha beta"}})
+
+	configPath := filepath.Join(t.TempDir(), "context-bridge", "config.json")
+	m := New(st, store.SearchModeRegex)
+	m.configPath = configPath
+	m.activeTab = TabSessions
+	m.focus = FocusCaptures
+	m.selectedSession = "ses_root"
+	m.searchScope = "ses_root"
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model := updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	model.rightPanel = PanelSearch
+	model.focus = FocusSearch
+	model.searchInput.SetValue(`"alpha`)
+	model.searchInput.Focus()
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if !model.loading {
+		t.Fatal("expected loading after submitting search")
+	}
+
+	msgs := runBatchCmd(cmd)
+	searchMsg, ok := findMsg[searchLoadedMsg](msgs)
+	if !ok {
+		t.Fatalf("expected searchLoadedMsg among %d messages", len(msgs))
+	}
+	if searchMsg.err == nil {
+		t.Fatal("expected FTS5 syntax error after settings save, proving the new mode is used immediately")
+	}
+}
+
 func TestSearchResultsEmptyStateShowsQuery(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.focus = FocusSearchResults
 	m.searchQuery = "somethingobscure"
 	m.searchResults = nil
@@ -667,7 +790,7 @@ func TestSearchResultsEmptyStateShowsQuery(t *testing.T) {
 }
 
 func TestViewSearchTabEmptyState(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.activeTab = TabSearch
 	m.selectedSession = ""
 	m.dashboardSessions = []store.SessionSummary{{ID: "dummy"}}
@@ -679,7 +802,7 @@ func TestViewSearchTabEmptyState(t *testing.T) {
 }
 
 func TestViewSearchShowsSearchInput(t *testing.T) {
-	m := withDimensions(New(nil), 120, 30)
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
 	m.activeTab = TabSearch
 	m.selectedSession = "ses_123"
 	m.rightPanel = PanelSearch
@@ -691,5 +814,80 @@ func TestViewSearchShowsSearchInput(t *testing.T) {
 	}
 	if !strings.Contains(output, "Full-Text Search") {
 		t.Fatalf("expected search view to show header, got:\n%s", output)
+	}
+}
+
+func TestNewStoresSearchMode(t *testing.T) {
+	m := New(nil, store.SearchModeFTS5)
+	if m.searchMode != store.SearchModeFTS5 {
+		t.Fatalf("expected FTS5 mode, got %q", m.searchMode)
+	}
+}
+
+func TestSearchReflectsModeRegex(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_regex_test", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_regex_test", []seedCapture{
+		{seq: 1, agent: "grep", desc: "auth", content: "auth.*Handler finds this regex pattern"},
+		{seq: 2, agent: "explore", desc: "other", content: "authHandler also here"},
+	})
+
+	m := New(st, store.SearchModeRegex)
+	m.activeTab = TabSessions
+	m.rightPanel = PanelSearch
+	m.focus = FocusSearch
+	m.searchScope = "ses_regex_test"
+	m.searchInput.SetValue("regex pattern")
+	m.searchInput.Focus()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model := updated.(Model)
+	if !model.loading {
+		t.Fatal("expected loading")
+	}
+
+	msgs := runBatchCmd(cmd)
+	searchMsg, ok := findMsg[searchLoadedMsg](msgs)
+	if !ok {
+		t.Fatalf("expected searchLoadedMsg, got %d messages", len(msgs))
+	}
+	if len(searchMsg.results) != 1 {
+		t.Fatalf("regex mode should match only 'regex pattern', got %d results", len(searchMsg.results))
+	}
+}
+
+func TestSearchReflectsModeFTS5(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_fts5_test", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_fts5_test", []seedCapture{
+		{seq: 1, agent: "grep", desc: "auth", content: "authentication module code"},
+		{seq: 2, agent: "explore", desc: "other", content: "other content"},
+	})
+
+	m := New(st, store.SearchModeFTS5)
+	m.activeTab = TabSessions
+	m.rightPanel = PanelSearch
+	m.focus = FocusSearch
+	m.searchScope = "ses_fts5_test"
+	m.searchInput.SetValue("authentication")
+	m.searchInput.Focus()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model := updated.(Model)
+	if !model.loading {
+		t.Fatal("expected loading")
+	}
+
+	msgs := runBatchCmd(cmd)
+	searchMsg, ok := findMsg[searchLoadedMsg](msgs)
+	if !ok {
+		t.Fatalf("expected searchLoadedMsg, got %d messages", len(msgs))
+	}
+	if len(searchMsg.results) != 1 {
+		t.Fatalf("fts5 mode should match 'authentication' word, got %d results", len(searchMsg.results))
 	}
 }

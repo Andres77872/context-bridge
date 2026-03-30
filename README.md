@@ -115,6 +115,59 @@ Add to `~/.config/opencode/opencode.json`:
 
 Restart OpenCode to load the MCP server.
 
+### Configuration
+
+The MCP server reads a configuration file at startup to determine search behavior.
+
+#### Config location
+
+| Source | Path |
+|--------|------|
+| **Default** | `<UserConfigDir>/context-bridge/config.json` (e.g., `~/.config/context-bridge/config.json` on Linux) |
+| **Env override** | `$CONTEXT_BRIDGE_CONFIG` |
+
+If the default config file doesn't exist, defaults are used. If `CONTEXT_BRIDGE_CONFIG` is set but the file doesn't exist, the server fails to start.
+
+#### Config file format
+
+```json
+{
+  "search_mode": "regex"
+}
+```
+
+#### Search modes
+
+| Mode | Query syntax | Description |
+|------|--------------|-------------|
+| `regex` (default) | Go regex | Case-insensitive regex. Invalid regex falls back to literal match. |
+| `fts5` | SQLite FTS5 MATCH | Full-text search with words, quoted phrases, prefix wildcards (`term*`). |
+
+#### MCP behavior
+
+**Important**: The MCP tool descriptions and server instructions change based on the configured `search_mode`:
+
+- **Docs** (this README) describe **both** modes so you understand all options.
+- **MCP** (tool descriptions, prompts, hints) shows **only** the active configured mode.
+
+When `search_mode: regex`, the MCP `search` tool describes regex syntax and examples. When `search_mode: fts5`, it describes FTS5 MATCH syntax instead.
+
+This means agents using Context Bridge receive guidance specific to the active mode — they don't need to guess or read generic docs.
+
+#### Mode-specific guidance
+
+**Regex mode** (default):
+
+- Use Go regex syntax: `auth.*`, `error.*Handler`, `(?i)jwt`
+- Invalid regex automatically falls back to case-insensitive literal match
+- Results appear in capture order (no ranking)
+
+**FTS5 mode**:
+
+- Use words and quoted phrases: `"exact phrase"`, `token*` (prefix), `content:term` (column filter)
+- FTS5 operators: AND (implicit), OR (`term1 OR term2`), NOT (`term1 NOT term2`)
+- Results ranked by BM25 score
+
 ### 4. Import existing data (optional)
 
 If you have legacy session data from OpenCode's tool-output:
@@ -272,22 +325,39 @@ Reads the full content of a specific output by its sequence number.
 
 ### `search`
 
-Full-text regex search across all captured outputs for a session.
+Search across all captured outputs for a session. Query syntax depends on the configured `search_mode` (see [Configuration](#configuration)).
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `session_id` | string | yes | OpenCode session ID |
-| `query` | string | yes | Search query (Regex supported) |
+| `query` | string | yes | Search query (syntax depends on configured mode) |
 | `context_lines` | number | no | Lines of context around matches (default: 3) |
 
-**Example:**
+**Query syntax by mode:**
+
+| Mode | Query syntax | Examples |
+|------|--------------|----------|
+| `regex` | Go regex (case-insensitive) | `auth.*`, `error.*Handler`, `(?i)jwt` |
+| `fts5` | FTS5 MATCH | `"exact phrase"`, `token*`, `term1 OR term2` |
+
+**Example (regex mode):**
 
 ```json
 {
   "session_id": "ses_abc123",
-  "query": "authentication JWT",
+  "query": "authentication.*JWT",
+  "context_lines": 5
+}
+```
+
+**Example (fts5 mode):**
+
+```json
+{
+  "session_id": "ses_abc123",
+  "query": "\"authentication\" JWT",
   "context_lines": 5
 }
 ```

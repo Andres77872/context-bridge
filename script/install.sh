@@ -63,7 +63,7 @@ http_get() {
 }
 
 parse_tag_name() {
-  printf '%s' "$1" | tr -d '\n' \
+  printf '%s' "$1" | tr -d '\n\r' \
     | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
@@ -121,12 +121,12 @@ semver_cmp() {
   b_major=$(printf '%s' "$b" | cut -d. -f1)
   b_minor=$(printf '%s' "$b" | cut -d. -f2)
   b_patch=$(printf '%s' "$b" | cut -d. -f3)
-  a_major=$(expr "$a_major" + 0 2>/dev/null || echo 0)
-  a_minor=$(expr "$a_minor" + 0 2>/dev/null || echo 0)
-  a_patch=$(expr "$a_patch" + 0 2>/dev/null || echo 0)
-  b_major=$(expr "$b_major" + 0 2>/dev/null || echo 0)
-  b_minor=$(expr "$b_minor" + 0 2>/dev/null || echo 0)
-  b_patch=$(expr "$b_patch" + 0 2>/dev/null || echo 0)
+  a_major=$(expr "$a_major" + 0 2>/dev/null) || a_major=0
+  a_minor=$(expr "$a_minor" + 0 2>/dev/null) || a_minor=0
+  a_patch=$(expr "$a_patch" + 0 2>/dev/null) || a_patch=0
+  b_major=$(expr "$b_major" + 0 2>/dev/null) || b_major=0
+  b_minor=$(expr "$b_minor" + 0 2>/dev/null) || b_minor=0
+  b_patch=$(expr "$b_patch" + 0 2>/dev/null) || b_patch=0
   if [ "$a_major" -gt "$b_major" ]; then return 1; fi
   if [ "$a_major" -lt "$b_major" ]; then return 2; fi
   if [ "$a_minor" -gt "$b_minor" ]; then return 1; fi

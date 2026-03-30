@@ -41,6 +41,10 @@ func (m Model) View() string {
 	} else {
 		body = m.viewSessionsTab(bodyWidth, bodyHeight)
 	}
+	if m.settingsActive {
+		dialog := m.renderSettingsDialog(bodyWidth - 8)
+		body = lipgloss.Place(bodyWidth, bodyHeight, lipgloss.Center, lipgloss.Center, dialog)
+	}
 
 	parts := []string{header, tabs, body}
 	if strings.TrimSpace(statusBar) != "" {
@@ -464,6 +468,7 @@ func (m Model) viewSearch(w, innerH int) string {
 
 	sessionText := "Session: " + truncateID(m.searchScope, 12)
 	parts = append(parts, metaStyle.Render(truncateLine(sessionText, w-4)))
+	parts = append(parts, metaStyle.Render(truncateLine(fmt.Sprintf("Engine: %s (global setting, press p to change)", m.searchMode), w-4)))
 
 	parts = append(parts, "")
 	parts = append(parts, panelStyle.Width(w-6).Render(m.searchInput.View()))
@@ -528,7 +533,7 @@ func (m Model) renderStatusBar() string {
 	var parts []string
 
 	// Global key hints
-	parts = append(parts, helpStyle.Render("tab/1/2/3: switch tab • s: full-text search • ctrl+c: quit"))
+	parts = append(parts, helpStyle.Render("tab/1/2/3: switch tab • s: search • p: settings • ctrl+c: quit"))
 
 	if m.loading {
 		parts = append(parts, statusStyle.Render(m.spinner.View()+"  Loading…"))
@@ -559,6 +564,57 @@ func (m Model) renderConfirmDialog(maxWidth int) string {
 
 	// Optional: add a hard width to the box itself if it looks too wide, but padding does enough usually
 	return confirmBoxStyle.Render(inner.String())
+}
+
+func (m Model) renderSettingsDialog(maxWidth int) string {
+	if maxWidth < 40 {
+		maxWidth = 40
+	}
+
+	options := []struct {
+		mode  store.SearchMode
+		label string
+		desc  string
+	}{
+		{mode: store.SearchModeRegex, label: "Regex", desc: "Literal + regex pattern matching across captured outputs."},
+		{mode: store.SearchModeFTS5, label: "FTS5", desc: "SQLite full-text token search across captured outputs."},
+	}
+
+	var inner strings.Builder
+	inner.WriteString(titleStyle.Render("Settings"))
+	inner.WriteString("\n")
+	inner.WriteString(dimStyle.Render(truncateLine("Global search engine for all TUI searches. This is not a per-search option.", maxWidth)))
+	inner.WriteString("\n\n")
+
+	for i, option := range options {
+		cursor := "  "
+		if i == m.settingsCursor {
+			cursor = "▸ "
+		}
+
+		current := ""
+		if option.mode == m.searchMode {
+			current = " " + metaStyle.Render("(current)")
+		}
+
+		line := cursor + option.label + current
+		if i == m.settingsCursor {
+			inner.WriteString(selectedStyle.Render(line))
+		} else {
+			inner.WriteString(line)
+		}
+		inner.WriteString("\n")
+		inner.WriteString(dimStyle.Render("   " + truncateLine(option.desc, maxWidth-3)))
+		inner.WriteString("\n\n")
+	}
+
+	if m.settingsSaveError != "" {
+		inner.WriteString(errorStyle.Render(truncateLine(m.settingsSaveError, maxWidth)))
+		inner.WriteString("\n\n")
+	}
+
+	inner.WriteString(helpStyle.Render("[↑/↓] Choose  [enter] Save  [esc] Cancel"))
+	return settingsBoxStyle.Width(maxWidth + 4).Render(inner.String())
 }
 
 const heroASCII = `

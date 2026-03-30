@@ -158,6 +158,14 @@
         <div class="pulse-dot"></div>
         <span class="text-[0.7rem] text-rp-subtle font-medium">SQLite connected</span>
       </div>
+      <button class="w-full nav-item !px-0 !py-2 mt-2 justify-between hover:bg-transparent" onclick="openSettingsModal()">
+        <span class="flex items-center gap-3">
+          <span class="material-symbols-outlined nav-icon">settings</span>
+          <span>Settings</span>
+        </span>
+        <span id="settings-mode-chip" class="rounded-full border border-rp-pine/20 bg-rp-pine/10 px-2 py-0.5 text-[0.62rem] font-mono font-semibold text-rp-pine">regex</span>
+      </button>
+      <div class="mt-1 mb-2 text-[0.65rem] text-rp-muted leading-relaxed">Shared engine for WEB, TUI, and MCP search behavior.</div>
       <div class="text-[0.65rem] text-rp-muted font-mono" id="version-footer">context-bridge</div>
     </div>
   </nav>
@@ -175,6 +183,9 @@
       </div>
       <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-rp-subtle border border-border hover:bg-muted/50 hover:text-rp-text transition-colors" onclick="refreshCurrent()">
         <span class="material-symbols-outlined text-[16px]">refresh</span> Refresh
+      </button>
+      <button class="md:hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-rp-subtle border border-border hover:bg-muted/50 hover:text-rp-text transition-colors" onclick="openSettingsModal()">
+        <span class="material-symbols-outlined text-[16px]">settings</span> Settings
       </button>
     </div>
 
@@ -252,6 +263,15 @@
       <div id="view-search" style="display: none;" class="flex-1 p-4 md:p-6 lg:p-8 max-w-5xl mx-auto w-full flex flex-col">
         <h2 class="font-heading font-semibold text-[0.75rem] tracking-widest uppercase text-rp-muted mb-5 shrink-0">Search Outputs</h2>
 
+        <div class="mb-4 rounded-xl border border-border bg-card/60 p-4 shadow-sm">
+          <div class="flex items-center gap-2.5 flex-wrap mb-1.5">
+            <span class="material-symbols-outlined text-rp-pine text-[18px]">settings</span>
+            <span class="text-[0.72rem] font-semibold tracking-widest uppercase text-rp-subtle">Global search engine</span>
+            <span id="search-mode-badge" class="rounded-full border border-rp-pine/20 bg-rp-pine/10 px-2 py-0.5 text-[0.65rem] font-mono font-semibold text-rp-pine">regex</span>
+          </div>
+          <div id="search-mode-copy" class="text-[0.76rem] text-rp-muted leading-relaxed">This is a shared setting for context-bridge. WEB uses changes immediately after save; TUI and MCP pick them up on next start.</div>
+        </div>
+
         <div class="flex flex-col sm:flex-row gap-3 mb-6 shrink-0">
           <div class="relative sm:max-w-[16rem] flex-1">
             <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-rp-muted text-[18px] pointer-events-none">folder</span>
@@ -294,6 +314,60 @@
 
   </div><!-- /main -->
 
+  <div id="settings-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 px-4 backdrop-blur-sm" onclick="closeSettingsModal()">
+    <div class="w-full max-w-lg rounded-2xl border border-border bg-card shadow-2xl" onclick="event.stopPropagation()">
+      <div class="flex items-start justify-between gap-4 border-b border-border p-5">
+        <div>
+          <div class="font-heading text-lg font-semibold text-rp-text">Search settings</div>
+          <div class="mt-1 text-[0.75rem] leading-relaxed text-rp-muted">Choose the shared search engine for context-bridge. This is NOT per-search; saving updates WEB immediately and persists the shared config for other surfaces.</div>
+        </div>
+        <button class="rounded-lg p-1.5 text-rp-muted transition-colors hover:bg-muted/40 hover:text-rp-text" onclick="closeSettingsModal()">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <div class="space-y-3 p-5">
+        <label class="block cursor-pointer rounded-xl border border-border bg-background/50 p-4 transition-colors hover:border-rp-pine/30 hover:bg-muted/20">
+          <div class="flex items-start gap-3">
+            <input type="radio" name="settings-search-mode" value="regex" class="mt-0.5 text-rp-pine focus:ring-rp-pine" />
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-rp-text">Regex</span>
+                <span class="rounded-full border border-rp-foam/20 bg-rp-foam/10 px-2 py-0.5 text-[0.62rem] font-mono font-semibold text-rp-foam">pattern matching</span>
+              </div>
+              <div class="mt-1 text-[0.74rem] leading-relaxed text-rp-muted">Use Go regular expressions. Invalid patterns fall back to literal text matching.</div>
+            </div>
+          </div>
+        </label>
+
+        <label class="block cursor-pointer rounded-xl border border-border bg-background/50 p-4 transition-colors hover:border-rp-pine/30 hover:bg-muted/20">
+          <div class="flex items-start gap-3">
+            <input type="radio" name="settings-search-mode" value="fts5" class="mt-0.5 text-rp-pine focus:ring-rp-pine" />
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-rp-text">FTS5</span>
+                <span class="rounded-full border border-rp-gold/20 bg-rp-gold/10 px-2 py-0.5 text-[0.62rem] font-mono font-semibold text-rp-gold">full-text</span>
+              </div>
+              <div class="mt-1 text-[0.74rem] leading-relaxed text-rp-muted">Use SQLite FTS5 MATCH syntax for tokenized full-text search, quoted phrases, and prefixes.</div>
+            </div>
+          </div>
+        </label>
+
+        <div class="rounded-xl border border-rp-iris/20 bg-rp-iris/10 p-3 text-[0.72rem] leading-relaxed text-rp-subtle">
+          Shared scope: all WEB searches switch immediately after saving. TUI and MCP use the saved mode on their next start.
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-3 border-t border-border p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div id="settings-feedback" class="text-[0.72rem] text-rp-muted min-h-[1rem]"></div>
+        <div class="flex gap-2 self-end">
+          <button class="rounded-lg border border-border px-4 py-2 text-[0.8rem] font-medium text-rp-subtle transition-colors hover:bg-muted/30 hover:text-rp-text" onclick="closeSettingsModal()">Cancel</button>
+          <button id="settings-save-button" class="rounded-lg bg-rp-pine px-4 py-2 text-[0.8rem] font-semibold text-[#131316] transition-all hover:bg-rp-pine/90" onclick="saveSettings()">Save settings</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 <script>
 // ═══════════════════════════════════════════════════════════════ STATE
 const state = {
@@ -306,6 +380,9 @@ const state = {
   searchQuery: '',
   searchResults: [],
   searchSessionId: '',
+  config: {
+    search_mode: 'regex',
+  },
 };
 
 // Auto-refresh
@@ -442,6 +519,122 @@ async function searchSession(sessionId, query, contextLines = 3) {
     throw new Error(body.error || `HTTP ${r.status}`);
   }
   return r.json();
+}
+
+async function fetchConfig() {
+  const r = await fetch('/api/config');
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function updateConfig(searchMode) {
+  const r = await fetch('/api/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ search_mode: searchMode }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(body.error || `HTTP ${r.status}`);
+  }
+  return body;
+}
+
+function searchModeLabel(mode) {
+  return mode === 'fts5' ? 'fts5' : 'regex';
+}
+
+function searchModePlaceholder(mode) {
+  return mode === 'fts5' ? 'FTS5 terms, "phrase", or prefix*…' : 'Regex pattern or literal text…';
+}
+
+function searchModeCopy(mode) {
+  if (mode === 'fts5') {
+    return 'Shared setting. WEB now searches with SQLite FTS5 syntax; TUI and MCP use this saved mode after restart.';
+  }
+  return 'Shared setting. WEB now searches with regex/literal matching; TUI and MCP use this saved mode after restart.';
+}
+
+function applyConfigState(cfg) {
+  if (!cfg || !cfg.search_mode) return;
+  state.config = cfg;
+
+  const mode = cfg.search_mode;
+  const badge = document.getElementById('search-mode-badge');
+  const chip = document.getElementById('settings-mode-chip');
+  const copy = document.getElementById('search-mode-copy');
+  const input = document.getElementById('search-input');
+
+  if (badge) badge.textContent = searchModeLabel(mode);
+  if (chip) chip.textContent = searchModeLabel(mode);
+  if (copy) copy.textContent = searchModeCopy(mode);
+  if (input) input.placeholder = searchModePlaceholder(mode);
+
+  document.querySelectorAll('input[name="settings-search-mode"]').forEach(el => {
+    el.checked = el.value === mode;
+  });
+}
+
+function setSettingsFeedback(message, tone = 'muted') {
+  const el = document.getElementById('settings-feedback');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = 'text-[0.72rem] min-h-[1rem]';
+  if (tone === 'error') el.classList.add('text-rp-love');
+  else if (tone === 'success') el.classList.add('text-emerald-400');
+  else el.classList.add('text-rp-muted');
+}
+
+function selectedSettingsMode() {
+  const selected = document.querySelector('input[name="settings-search-mode"]:checked');
+  return selected ? selected.value : 'regex';
+}
+
+async function loadConfigState() {
+  const cfg = await fetchConfig();
+  applyConfigState(cfg);
+  return cfg;
+}
+
+async function openSettingsModal() {
+  const modal = document.getElementById('settings-modal');
+  if (!modal) return;
+
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+  setSettingsFeedback('Loading current shared setting…');
+
+  try {
+    await loadConfigState();
+    setSettingsFeedback('This changes the shared search engine for context-bridge.');
+  } catch (e) {
+    setSettingsFeedback('Failed to load settings: ' + e.message, 'error');
+  }
+}
+
+function closeSettingsModal() {
+  const modal = document.getElementById('settings-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+}
+
+async function saveSettings() {
+  const button = document.getElementById('settings-save-button');
+  const mode = selectedSettingsMode();
+  if (button) button.disabled = true;
+  setSettingsFeedback('Saving shared setting…');
+
+  try {
+    const cfg = await updateConfig(mode);
+    applyConfigState(cfg);
+    setSettingsFeedback('Saved. WEB now uses the new engine immediately.', 'success');
+    setTimeout(() => closeSettingsModal(), 500);
+  } catch (e) {
+    setSettingsFeedback('Failed to save settings: ' + e.message, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════ NAVIGATION
@@ -878,7 +1071,12 @@ function updateRefreshUI() {
 // ═══════════════════════════════════════════════════════════════ INIT
 document.addEventListener('DOMContentLoaded', () => {
   startRefreshTimer();
+  loadConfigState().catch(e => console.error('loadConfigState failed:', e));
   loadOverview();
+});
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') closeSettingsModal();
 });
 </script>
 </body>

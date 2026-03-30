@@ -79,6 +79,7 @@ var filterBarStyle = lipgloss.NewStyle().Foreground(colorGold).Bold(true)
 var (
 	confirmBoxStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorLove).Padding(1, 2)
 	confirmWarningStyle = lipgloss.NewStyle().Foreground(colorLove).Bold(true)
+	settingsBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorIris).Padding(1, 2)
 )
 
 // agentBadgeColors maps agent type names to terminal-safe accent colors.

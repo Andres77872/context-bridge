@@ -11,27 +11,61 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-const serverInstructions = `Context Bridge exposes same-session research history captured from OpenCode subagents.
-Use list to list prior outputs, search to search them, and read to read one by output number.`
+func serverInstructions(mode SearchMode) string {
+	switch mode {
+	case store.SearchModeFTS5:
+		return `Context Bridge exposes same-session research history captured from OpenCode subagents.
+
+Use ` + "`list`" + ` to list prior outputs, ` + "`search`" + ` to search them (FTS5 syntax), and ` + "`read`" + ` to read one by output number.
+
+The ` + "`search`" + ` tool uses FTS5 full-text search (SQLite MATCH syntax). Use words and quoted phrases: "error handler", token* (prefix), column:value (column filter).`
+	default:
+		return `Context Bridge exposes same-session research history captured from OpenCode subagents.
+
+Use ` + "`list`" + ` to list prior outputs, ` + "`search`" + ` to search them (regex), and ` + "`read`" + ` to read one by output number.
+
+The ` + "`search`" + ` tool uses case-insensitive Go regex. Invalid regex falls back to literal match. Examples: auth.*, error.*Handler, (?i)jwt.`
+	}
+}
 
 const timeFormat = "2006-01-02T15:04:05Z07:00"
 
-func New(st *store.Store, version string) *server.MCPServer {
+type SearchMode = store.SearchMode
+
+func New(st *store.Store, version string, searchMode SearchMode) *server.MCPServer {
 	srv := server.NewMCPServer(
 		"context-bridge",
 		version,
 		server.WithToolCapabilities(true),
-		server.WithInstructions(serverInstructions),
+		server.WithInstructions(serverInstructions(searchMode)),
 	)
-	registerTools(srv, st)
+	registerTools(srv, st, searchMode)
 	return srv
 }
 
-func Serve(st *store.Store, version string) error {
-	return server.ServeStdio(New(st, version))
+func Serve(st *store.Store, version string, searchMode SearchMode) error {
+	return server.ServeStdio(New(st, version, searchMode))
 }
 
-func registerTools(srv *server.MCPServer, st *store.Store) {
+func searchDescription(mode SearchMode) string {
+	switch mode {
+	case store.SearchModeFTS5:
+		return "Search across all captured outputs for the current session context using FTS5 full-text search (SQLite MATCH syntax). Use words, quoted phrases, and FTS5 operators."
+	default:
+		return "Search across all captured outputs for the current session context using case-insensitive Go regex. Invalid regex falls back to literal match."
+	}
+}
+
+func searchQueryHint(mode SearchMode) string {
+	switch mode {
+	case store.SearchModeFTS5:
+		return "FTS5 MATCH query: words, quoted phrases (\"exact phrase\"), prefix wildcards (term*), column filters (content:term)."
+	default:
+		return "Case-insensitive Go regex pattern or literal text. Examples: auth.*, error.*Handler, (?i)jwt, token."
+	}
+}
+
+func registerTools(srv *server.MCPServer, st *store.Store, searchMode SearchMode) {
 	listTool := mcp.NewTool("list",
 		mcp.WithDescription("View the current session's subagent output history with sequence numbers, times, sizes, and previews."),
 		mcp.WithString("session_id", mcp.Description("Root or child OpenCode session ID.")),
@@ -45,9 +79,9 @@ func registerTools(srv *server.MCPServer, st *store.Store) {
 	)
 
 	searchTool := mcp.NewTool("search",
-		mcp.WithDescription("Search across all captured outputs for the current session context using Regex."),
+		mcp.WithDescription(searchDescription(searchMode)),
 		mcp.WithString("session_id", mcp.Description("Root or child OpenCode session ID.")),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Regex pattern or text query to search for across stored outputs.")),
+		mcp.WithString("query", mcp.Required(), mcp.Description(searchQueryHint(searchMode))),
 		mcp.WithNumber("context_lines", mcp.Description("Optional lines of context around each match. Defaults to 3.")),
 	)
 
@@ -141,7 +175,7 @@ func registerTools(srv *server.MCPServer, st *store.Store) {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		results, err := st.Search(sessionID, query, req.GetInt("context_lines", 3))
+		results, err := st.SearchWithMode(sessionID, query, req.GetInt("context_lines", 3), searchMode)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"context-bridge/internal/config"
 	bridgeMCP "context-bridge/internal/mcp"
 	"context-bridge/internal/migrate"
 	"context-bridge/internal/server"
@@ -103,13 +104,19 @@ func cmdMCP(args []string) error {
 		return err
 	}
 
+	cfgPath := config.ResolveConfigPath(os.LookupEnv, os.UserConfigDir)
+	cfg, err := config.LoadConfig(cfgPath, cfgPath != "" && os.Getenv("CONTEXT_BRIDGE_CONFIG") != "")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	return bridgeMCP.Serve(st, version)
+	return bridgeMCP.Serve(st, version, bridgeMCP.SearchMode(cfg.SearchMode))
 }
 
 func cmdTUI(args []string) error {
@@ -118,13 +125,19 @@ func cmdTUI(args []string) error {
 		return err
 	}
 
+	cfgPath := config.ResolveConfigPath(os.LookupEnv, os.UserConfigDir)
+	cfg, err := config.LoadConfig(cfgPath, cfgPath != "" && os.Getenv("CONTEXT_BRIDGE_CONFIG") != "")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	return tui.Run(st)
+	return tui.Run(st, store.SearchMode(cfg.SearchMode), cfgPath)
 }
 
 func cmdMigrate(args []string) error {
@@ -156,13 +169,19 @@ func cmdWeb(args []string) error {
 		return err
 	}
 
+	cfgPath := config.ResolveConfigPath(os.LookupEnv, os.UserConfigDir)
+	cfg, err := config.LoadConfig(cfgPath, cfgPath != "" && os.Getenv("CONTEXT_BRIDGE_CONFIG") != "")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	return web.Run(st, *addr, version)
+	return web.Run(st, *addr, version, store.SearchMode(cfg.SearchMode), cfgPath)
 }
 
 func openStore() (*store.Store, error) {

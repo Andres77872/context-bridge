@@ -634,3 +634,75 @@ sixth line`
 		t.Errorf("preview should contain first line, got:\n%s", preview)
 	}
 }
+
+func TestSearchWithModeRegex(t *testing.T) {
+	st := openTestStore(t)
+	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+		childSessionID: "ses-child",
+		callID:         "call-1",
+		agent:          "grep",
+		description:    "Find issue",
+		content:        "before line\nuniqueword appears\nafter line",
+	})
+
+	results, err := st.SearchWithMode("ses-child", "uniqueword", 1, SearchModeRegex)
+	if err != nil {
+		t.Fatalf("SearchWithMode(regex): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].MatchCount != 1 {
+		t.Fatalf("expected 1 match, got %d", results[0].MatchCount)
+	}
+}
+
+func TestSearchWithModeFTS5(t *testing.T) {
+	st := openTestStore(t)
+	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+		childSessionID: "ses-child",
+		callID:         "call-1",
+		agent:          "grep",
+		description:    "Find auth error",
+		content:        "before line\nauth error appears\nafter line",
+	})
+
+	results, err := st.SearchWithMode("ses-child", "auth", 1, SearchModeFTS5)
+	if err != nil {
+		t.Fatalf("SearchWithMode(fts5): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+}
+
+func TestSearchWithModeEmptyReturnsRegex(t *testing.T) {
+	st := openTestStore(t)
+	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+		childSessionID: "ses-child",
+		callID:         "call-1",
+		agent:          "grep",
+		description:    "Find auth error",
+		content:        "auth error appears",
+	})
+
+	results, err := st.SearchWithMode("ses-child", "auth", 1, "")
+	if err != nil {
+		t.Fatalf("SearchWithMode(empty): %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result with empty mode (defaults to regex), got %d", len(results))
+	}
+}
+
+func TestSearchWithModeInvalid(t *testing.T) {
+	st := openTestStore(t)
+
+	_, err := st.SearchWithMode("ses-root", "query", 1, "ripgrep")
+	if err == nil {
+		t.Fatalf("invalid mode should error")
+	}
+	if !strings.Contains(err.Error(), "unsupported search mode") {
+		t.Fatalf("expected unsupported mode error, got: %v", err)
+	}
+}

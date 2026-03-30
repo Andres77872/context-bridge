@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"context-bridge/internal/config"
 	"context-bridge/internal/store"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -55,7 +56,8 @@ const (
 
 // Model is the root Bubble Tea model for the TUI.
 type Model struct {
-	store *store.Store
+	store      *store.Store
+	searchMode store.SearchMode
 
 	activeTab Tab
 
@@ -113,6 +115,12 @@ type Model struct {
 	confirmMeta   []string // extra metadata lines for the confirm dialog
 	confirmAction confirmAction
 
+	// Settings modal state.
+	settingsActive    bool
+	settingsCursor    int
+	settingsSaveError string
+	configPath        string
+
 	ready bool
 }
 
@@ -150,7 +158,7 @@ type searchLoadedMsg struct {
 
 // New initialises the TUI model. The search input starts unfocused; it is
 // focused only when entering ScreenSearch.
-func New(st *store.Store) Model {
+func New(st *store.Store, searchMode store.SearchMode) Model {
 	searchInput := textinput.New()
 	searchInput.Placeholder = "Search this session"
 	searchInput.Prompt = "/ "
@@ -168,6 +176,7 @@ func New(st *store.Store) Model {
 
 	return Model{
 		store:           st,
+		searchMode:      searchMode,
 		activeTab:       TabOverview,
 		focus:           FocusSessions,
 		rightPanel:      PanelCaptures,
@@ -182,8 +191,10 @@ func New(st *store.Store) Model {
 }
 
 // Run starts the TUI program with alt-screen mode.
-func Run(st *store.Store) error {
-	program := tea.NewProgram(New(st), tea.WithAltScreen(), tea.WithMouseCellMotion())
+func Run(st *store.Store, searchMode store.SearchMode, configPath string) error {
+	model := New(st, searchMode)
+	model.configPath = configPath
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := program.Run()
 	return err
 }
@@ -226,9 +237,9 @@ func loadCaptureCmd(st *store.Store, sessionID string, seq int) tea.Cmd {
 	}
 }
 
-func loadSearchCmd(st *store.Store, sessionID, query string) tea.Cmd {
+func loadSearchCmd(st *store.Store, sessionID, query string, searchMode store.SearchMode) tea.Cmd {
 	return func() tea.Msg {
-		results, err := st.Search(sessionID, query, 3)
+		results, err := st.SearchWithMode(sessionID, query, 3, searchMode)
 
 		rootID, rootErr := st.ResolveRoot(sessionID)
 		if rootErr != nil {
@@ -320,6 +331,57 @@ func (m *Model) deactivateFilter() {
 	m.filterInput.Blur()
 	m.sessionCursor = 0
 	m.sessionScroll = 0
+}
+
+func (m *Model) activateSettings() {
+	if m.confirmActive {
+		return
+	}
+	m.settingsActive = true
+	m.settingsSaveError = ""
+	m.settingsCursor = m.settingsCursorForMode(m.searchMode)
+}
+
+func (m *Model) closeSettings() {
+	m.settingsActive = false
+	m.settingsSaveError = ""
+}
+
+func (m Model) settingsModeForCursor() store.SearchMode {
+	if m.settingsCursor == 1 {
+		return store.SearchModeFTS5
+	}
+	return store.SearchModeRegex
+}
+
+func (m Model) settingsCursorForMode(mode store.SearchMode) int {
+	if mode == store.SearchModeFTS5 {
+		return 1
+	}
+	return 0
+}
+
+func (m *Model) saveSettingsSelection() error {
+	if m.configPath == "" {
+		err := fmt.Errorf("settings cannot be saved because config path is unavailable")
+		m.settingsSaveError = err.Error()
+		return err
+	}
+
+	mode := m.settingsModeForCursor()
+	err := config.UpdateConfig(m.configPath, false, func(cfg config.Config) config.Config {
+		cfg.SearchMode = config.SearchMode(mode)
+		return cfg
+	})
+	if err != nil {
+		m.settingsSaveError = err.Error()
+		return err
+	}
+
+	m.searchMode = mode
+	m.closeSettings()
+	m.setStatus(fmt.Sprintf("Global search engine set to %s", mode))
+	return nil
 }
 
 // syncComponentSize recalculates viewport and input dimensions on window resize.

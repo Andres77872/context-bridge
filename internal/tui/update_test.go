@@ -10,7 +10,7 @@ import (
 )
 
 func TestWindowSizeMsgSyncsComponents(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
 	model := updated.(Model)
 
@@ -23,7 +23,7 @@ func TestWindowSizeMsgSyncsComponents(t *testing.T) {
 }
 
 func TestTabAndNumericKeysSwitchTabs(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 
 	// Test Tab
 	m.activeTab = TabOverview
@@ -45,7 +45,7 @@ func TestTabAndNumericKeysSwitchTabs(t *testing.T) {
 }
 
 func TestPluginInstalledMsgUpdatesStatus(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 
 	// Success
 	updated, _ := m.Update(pluginInstalledMsg{path: "/tmp/plugin"})
@@ -67,7 +67,7 @@ func TestPluginInstalledMsgUpdatesStatus(t *testing.T) {
 }
 
 func TestSearchEnterEmptyQuerySetsError(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSearch
 	m.focus = FocusSearch
 	m.searchInput.Focus()
@@ -82,7 +82,7 @@ func TestSearchEnterEmptyQuerySetsError(t *testing.T) {
 }
 
 func TestSKeyFromSearchResultsReturnsToSearchInput(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSearch
 	m.focus = FocusSearchResults
 	m.searchQuery = "prev query"
@@ -102,7 +102,7 @@ func TestSKeyFromSearchResultsReturnsToSearchInput(t *testing.T) {
 }
 
 func TestLoadedMessagesErrorHandling(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	testErr := errors.New("test error")
 
 	// Dashboard
@@ -131,7 +131,7 @@ func TestLoadedMessagesErrorHandling(t *testing.T) {
 }
 
 func TestFilterEnterBlursInput(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptures
 	m.activateFilter()
@@ -149,7 +149,7 @@ func TestFilterEnterBlursInput(t *testing.T) {
 }
 
 func TestMouseWheelInSessionList(t *testing.T) {
-	m := New(nil)
+	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusCaptures
 	m.height = 20

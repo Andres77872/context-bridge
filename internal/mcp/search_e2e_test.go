@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"context-bridge/internal/store"
 )
 
 func TestContextBridgeSearchE2E(t *testing.T) {
@@ -119,7 +121,7 @@ def validate_token(payload):
 `,
 	})
 
-	srv := New(st, "test")
+	srv := New(st, "test", store.SearchModeRegex)
 
 	t.Run("Scenario 1: Simple Regex Search with default context lines", func(t *testing.T) {
 		resp := callTool(t, srv, "search", map[string]any{
@@ -239,6 +241,128 @@ def validate_token(payload):
 		}
 		if !strings.Contains(resp.Text, "query is required") {
 			t.Errorf("Expected 'query is required' error, got: %s", resp.Text)
+		}
+	})
+}
+
+func TestContextBridgeSearchE2EFTS5(t *testing.T) {
+	st := openTestStore(t)
+	sessionID := "fts5-test-session"
+
+	seedImportedCapture(t, st, sessionID, 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+		childSessionID: sessionID + "-child",
+		callID:         "fts5-call-1",
+		agent:          "grep",
+		description:    "Authentication module analysis",
+		content: `Analyzing auth module:
+
+class AuthenticationHandler:
+    def handle_jwt_token(self, token):
+        """Process JWT authentication token."""
+        pass
+    
+    def handle_oauth_flow(self, request):
+        """Process OAuth authentication flow."""
+        pass
+
+Found authentication patterns in:
+- jwt_token validation
+- oauth_flow processing
+`,
+	})
+
+	seedImportedCapture(t, st, sessionID, 2, time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC), seededCapture{
+		childSessionID: sessionID + "-child2",
+		callID:         "fts5-call-2",
+		agent:          "explore",
+		description:    "Error handling investigation",
+		content: `Error patterns found:
+
+[ERROR] jwt_token validation failed
+[ERROR] oauth_flow timeout occurred
+[WARN] authentication cache miss
+
+Stack trace for auth error:
+  File "auth.py", line 45: handle_jwt_token failed
+  File "auth.py", line 67: handle_oauth_flow exception
+`,
+	})
+
+	srv := New(st, "test", store.SearchModeFTS5)
+
+	t.Run("Scenario 7: FTS5 Simple Word Match", func(t *testing.T) {
+		resp := callTool(t, srv, "search", map[string]any{
+			"session_id": sessionID,
+			"query":      "authentication",
+		})
+		if resp.IsError {
+			t.Fatalf("unexpected error: %v", resp.Text)
+		}
+		if !strings.Contains(resp.Text, "match(es)") {
+			t.Errorf("Expected matches for 'authentication', got:\n%s", resp.Text)
+		}
+		if !strings.Contains(resp.Text, "Authentication") {
+			t.Errorf("Expected match in output 1, got:\n%s", resp.Text)
+		}
+	})
+
+	t.Run("Scenario 8: FTS5 Match Found", func(t *testing.T) {
+		resp := callTool(t, srv, "search", map[string]any{
+			"session_id": sessionID,
+			"query":      "jwt_token",
+		})
+		if resp.IsError {
+			t.Fatalf("unexpected error: %v", resp.Text)
+		}
+		if !strings.Contains(resp.Text, "match(es)") {
+			t.Errorf("Expected matches for 'jwt_token', got:\n%s", resp.Text)
+		}
+		if !strings.Contains(resp.Text, "jwt_token") {
+			t.Errorf("Expected 'jwt_token' in snippet, got:\n%s", resp.Text)
+		}
+	})
+
+	t.Run("Scenario 9: FTS5 Quoted Phrase", func(t *testing.T) {
+		resp := callTool(t, srv, "search", map[string]any{
+			"session_id": sessionID,
+			"query":      `"jwt_token"`,
+		})
+		if resp.IsError {
+			t.Fatalf("unexpected error: %v", resp.Text)
+		}
+		if !strings.Contains(resp.Text, "jwt_token") {
+			t.Errorf("Expected matches for quoted phrase 'jwt_token', got:\n%s", resp.Text)
+		}
+	})
+
+	t.Run("Scenario 10: FTS5 No Results", func(t *testing.T) {
+		resp := callTool(t, srv, "search", map[string]any{
+			"session_id": sessionID,
+			"query":      "nonexistentword12345",
+		})
+		if resp.IsError {
+			t.Fatalf("unexpected error: %v", resp.Text)
+		}
+		if !strings.Contains(resp.Text, "No matches") {
+			t.Errorf("Expected 'No matches' message, got:\n%s", resp.Text)
+		}
+	})
+
+	t.Run("Scenario 11: FTS5 Mode Server Instructions", func(t *testing.T) {
+		regexSrv := New(st, "test", store.SearchModeRegex)
+		fts5Srv := New(st, "test", store.SearchModeFTS5)
+
+		regexResp := callListTools(t, regexSrv)
+		fts5Resp := callListTools(t, fts5Srv)
+
+		regexDesc := findToolDescription(regexResp, "search")
+		fts5Desc := findToolDescription(fts5Resp, "search")
+
+		if strings.Contains(regexDesc, "FTS5") {
+			t.Errorf("Regex mode should NOT mention FTS5 in description, got: %q", regexDesc)
+		}
+		if !strings.Contains(fts5Desc, "FTS5") {
+			t.Errorf("FTS5 mode should mention FTS5 in description, got: %q", fts5Desc)
 		}
 	})
 }

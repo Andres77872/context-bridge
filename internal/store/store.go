@@ -507,6 +507,69 @@ func (s *Store) Search(sessionID, query string, contextLines int) ([]SearchResul
 	return results, nil
 }
 
+type SearchMode string
+
+const (
+	SearchModeRegex SearchMode = "regex"
+	SearchModeFTS5  SearchMode = "fts5"
+)
+
+func (s *Store) SearchWithMode(sessionID, query string, contextLines int, mode SearchMode) ([]SearchResult, error) {
+	switch mode {
+	case SearchModeRegex, "":
+		return s.Search(sessionID, query, contextLines)
+	case SearchModeFTS5:
+		return s.searchFTS5(sessionID, query, contextLines)
+	default:
+		return nil, fmt.Errorf("unsupported search mode: %q", mode)
+	}
+}
+
+func (s *Store) searchFTS5(sessionID, query string, contextLines int) ([]SearchResult, error) {
+	rootID, err := s.ResolveRoot(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+	if contextLines <= 0 {
+		contextLines = 3
+	}
+
+	rows, err := s.db.Query(`
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at
+		FROM captures c
+		JOIN sessions ses ON ses.id = c.session_id
+		JOIN captures_fts fts ON fts.rowid = c.id
+		WHERE c.session_id = ? AND captures_fts MATCH ?
+		ORDER BY c.seq ASC
+	`, rootID, query)
+	if err != nil {
+		return nil, fmt.Errorf("fts5 query failed: %w", err)
+	}
+	defer rows.Close()
+
+	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(query))
+	var results []SearchResult
+	for rows.Next() {
+		record, err := scanCapture(rows, true)
+		if err != nil {
+			return nil, err
+		}
+		snippet, matches := buildSnippet(record.Content, re, contextLines)
+		if matches == 0 {
+			continue
+		}
+		results = append(results, SearchResult{Capture: *record, Snippet: snippet, MatchCount: matches})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func (s *Store) RenderHint(sessionID string) (string, error) {
 	rootID, err := s.ResolveRoot(sessionID)
 	if err != nil {

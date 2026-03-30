@@ -11,9 +11,11 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"context-bridge/internal/config"
 	"context-bridge/internal/store"
 )
 
@@ -21,12 +23,15 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	store *store.Store
-	mux   *http.ServeMux
+	store      *store.Store
+	searchMode store.SearchMode
+	configPath string
+	mu         sync.RWMutex
+	mux        *http.ServeMux
 }
 
-func New(st *store.Store) *Server {
-	s := &Server{store: st, mux: http.NewServeMux()}
+func New(st *store.Store, searchMode store.SearchMode, configPath string) *Server {
+	s := &Server{store: st, searchMode: searchMode, configPath: configPath, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -37,6 +42,8 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
+	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
+	s.mux.HandleFunc("PUT /api/config", s.handleUpdateConfig)
 	s.mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	s.mux.HandleFunc("GET /api/sessions/{id}/captures", s.handleCaptures)
 	s.mux.HandleFunc("GET /api/sessions/{id}/captures/{seq}", s.handleCapture)
@@ -63,8 +70,68 @@ func (s *Server) routes() {
 
 func cors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
+type configResponse struct {
+	SearchMode    string   `json:"search_mode"`
+	Scope         string   `json:"scope"`
+	Immediate     []string `json:"immediate"`
+	RestartNeeded []string `json:"restart_required"`
+}
+
+func (s *Server) currentSearchMode() store.SearchMode {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.searchMode
+}
+
+func (s *Server) setSearchMode(mode store.SearchMode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.searchMode = mode
+}
+
+func (s *Server) currentConfigResponse() configResponse {
+	return configResponse{
+		SearchMode:    string(s.currentSearchMode()),
+		Scope:         "global",
+		Immediate:     []string{"web"},
+		RestartNeeded: []string{"tui", "mcp"},
+	}
+}
+
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	writeJSON(w, http.StatusOK, s.currentConfigResponse())
+}
+
+func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	if s.configPath == "" {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("config path is unavailable"))
+		return
+	}
+
+	var req config.Config
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid config payload: %w", err))
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := config.SaveConfig(s.configPath, req); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.setSearchMode(store.SearchMode(req.SearchMode))
+	writeJSON(w, http.StatusOK, s.currentConfigResponse())
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +294,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := s.store.Search(id, q, contextLines)
+	results, err := s.store.SearchWithMode(id, q, contextLines, s.currentSearchMode())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -273,8 +340,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-func Run(st *store.Store, addr, version string) error {
-	srv := New(st)
+func Run(st *store.Store, addr, version string, searchMode store.SearchMode, configPath string) error {
+	srv := New(st, searchMode, configPath)
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Routes(),

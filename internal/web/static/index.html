@@ -192,6 +192,8 @@
     <!-- Page content -->
     <div id="page" class="flex-1 flex flex-col overflow-y-auto bg-background relative">
 
+      <div id="feedback-banner" class="hidden border-b px-4 py-3 text-[0.8rem] md:px-6 lg:px-8"></div>
+
       <!-- ═══════════ VIEW: OVERVIEW -->
       <div id="view-overview" class="flex-1 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto w-full space-y-8">
         
@@ -368,6 +370,35 @@
     </div>
   </div>
 
+  <div id="confirm-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 px-4 backdrop-blur-sm" onclick="cancelConfirm()">
+    <div class="w-full max-w-lg rounded-2xl border border-border bg-card shadow-2xl" onclick="event.stopPropagation()">
+      <div class="flex items-start justify-between gap-4 border-b border-border p-5">
+        <div>
+          <div id="confirm-modal-title" class="font-heading text-lg font-semibold text-rp-text">Confirm destructive action</div>
+          <div id="confirm-modal-copy" class="mt-1 text-[0.75rem] leading-relaxed text-rp-muted">This will remove data from the current dashboard review flow.</div>
+        </div>
+        <button class="rounded-lg p-1.5 text-rp-muted transition-colors hover:bg-muted/40 hover:text-rp-text" onclick="cancelConfirm()">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <div class="space-y-3 p-5">
+        <div class="rounded-xl border border-rp-love/20 bg-rp-love/10 p-3 text-[0.72rem] leading-relaxed text-rp-subtle">
+          Nothing is deleted until you confirm. Cancel keeps the current review state unchanged.
+        </div>
+        <div id="confirm-modal-meta" class="space-y-2"></div>
+      </div>
+
+      <div class="flex flex-col gap-3 border-t border-border p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div id="confirm-feedback" class="text-[0.72rem] text-rp-muted min-h-[1rem]"></div>
+        <div class="flex gap-2 self-end">
+          <button class="rounded-lg border border-border px-4 py-2 text-[0.8rem] font-medium text-rp-subtle transition-colors hover:bg-muted/30 hover:text-rp-text" onclick="cancelConfirm()">Cancel</button>
+          <button id="confirm-action-button" class="rounded-lg bg-rp-love px-4 py-2 text-[0.8rem] font-semibold text-[#131316] transition-all hover:bg-rp-love/90" onclick="submitConfirm()">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 <script>
 // ═══════════════════════════════════════════════════════════════ STATE
 const state = {
@@ -376,10 +407,28 @@ const state = {
   sessions: [],
   selectedSession: null,
   captures: [],
+  captureAgents: [],
+  captureFilters: {
+    agent: '',
+    query: '',
+  },
   selectedCapture: null,
   searchQuery: '',
   searchResults: [],
   searchSessionId: '',
+  confirm: {
+    open: false,
+    action: '',
+    sessionId: '',
+    seq: null,
+    title: '',
+    copy: '',
+    meta: [],
+  },
+  feedback: {
+    tone: 'muted',
+    message: '',
+  },
   config: {
     search_mode: 'regex',
   },
@@ -505,6 +554,15 @@ async function fetchCaptures(sessionId) {
   return r.json();
 }
 
+async function fetchCapturesFiltered(sessionId, agent = '') {
+  const params = new URLSearchParams();
+  if (agent) params.set('agent', agent);
+  const suffix = params.toString() ? `?${params}` : '';
+  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/captures${suffix}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
 async function fetchCapture(sessionId, seq) {
   const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/captures/${seq}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -532,6 +590,28 @@ async function updateConfig(searchMode) {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ search_mode: searchMode }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(body.error || `HTTP ${r.status}`);
+  }
+  return body;
+}
+
+async function deleteSessionRequest(sessionId) {
+  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(body.error || `HTTP ${r.status}`);
+  }
+  return body;
+}
+
+async function deleteCaptureRequest(sessionId, seq) {
+  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/captures/${seq}`, {
+    method: 'DELETE',
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -583,6 +663,166 @@ function setSettingsFeedback(message, tone = 'muted') {
   if (tone === 'error') el.classList.add('text-rp-love');
   else if (tone === 'success') el.classList.add('text-emerald-400');
   else el.classList.add('text-rp-muted');
+}
+
+function setFeedback(message, tone = 'muted') {
+  state.feedback = { message: message || '', tone };
+  const el = document.getElementById('feedback-banner');
+  if (!el) return;
+
+  if (!message) {
+    el.textContent = '';
+    el.className = 'hidden border-b px-4 py-3 text-[0.8rem] md:px-6 lg:px-8';
+    return;
+  }
+
+  let toneClasses = 'border-border bg-muted/20 text-rp-muted';
+  if (tone === 'success') toneClasses = 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300';
+  else if (tone === 'error') toneClasses = 'border-rp-love/20 bg-rp-love/10 text-rp-love';
+
+  el.textContent = message;
+  el.className = `border-b px-4 py-3 text-[0.8rem] md:px-6 lg:px-8 ${toneClasses}`;
+}
+
+function setConfirmFeedback(message, tone = 'muted') {
+  const el = document.getElementById('confirm-feedback');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = 'text-[0.72rem] min-h-[1rem]';
+  if (tone === 'error') el.classList.add('text-rp-love');
+  else if (tone === 'success') el.classList.add('text-emerald-400');
+  else el.classList.add('text-rp-muted');
+}
+
+function openConfirm(config) {
+  state.confirm = {
+    open: true,
+    action: config.action || '',
+    sessionId: config.sessionId || '',
+    seq: config.seq ?? null,
+    title: config.title || 'Confirm destructive action',
+    copy: config.copy || 'This will remove data from the current dashboard review flow.',
+    meta: config.meta || [],
+  };
+
+  const modal = document.getElementById('confirm-modal');
+  const title = document.getElementById('confirm-modal-title');
+  const copy = document.getElementById('confirm-modal-copy');
+  const meta = document.getElementById('confirm-modal-meta');
+  if (!modal || !title || !copy || !meta) return;
+
+  title.textContent = state.confirm.title;
+  copy.textContent = state.confirm.copy;
+  meta.innerHTML = state.confirm.meta.map(item => `
+    <div class="rounded-xl border border-border bg-background/50 p-3">
+      <div class="text-[0.65rem] font-semibold uppercase tracking-widest text-rp-subtle">${escHtml(item.label)}</div>
+      <div class="mt-1 font-mono text-[0.76rem] text-rp-text">${escHtml(item.value)}</div>
+    </div>
+  `).join('');
+
+  setConfirmFeedback('Review the target carefully before confirming.');
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function closeConfirm() {
+  state.confirm = {
+    open: false,
+    action: '',
+    sessionId: '',
+    seq: null,
+    title: '',
+    copy: '',
+    meta: [],
+  };
+  const modal = document.getElementById('confirm-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.classList.remove('flex');
+  setConfirmFeedback('');
+}
+
+function cancelConfirm() {
+  if (!state.confirm.open) return;
+  closeConfirm();
+  setFeedback('Deletion canceled. Current review state was left unchanged.', 'muted');
+}
+
+async function submitConfirm() {
+  if (!state.confirm.open) return;
+
+  const button = document.getElementById('confirm-action-button');
+  if (button) button.disabled = true;
+  setConfirmFeedback('Deleting…');
+
+  try {
+    if (state.confirm.action === 'delete_session') {
+      await deleteSessionRequest(state.confirm.sessionId);
+      await refreshDashboardCollections();
+      state.selectedSession = null;
+      state.selectedCapture = null;
+      state.captures = [];
+      state.captureAgents = [];
+      renderSessionList(state.sessions);
+      renderEmptySessionPanel('Session deleted from dashboard review.', 'The session remains listed with a deleted badge when historical context still matters.');
+      setFeedback(`Session ${truncateId(state.confirm.sessionId, 22)} deleted from review.`, 'success');
+    } else if (state.confirm.action === 'delete_capture') {
+      const sessionId = state.confirm.sessionId;
+      const agent = state.captureFilters.agent;
+      await deleteCaptureRequest(sessionId, state.confirm.seq);
+      await refreshDashboardCollections();
+      state.selectedCapture = null;
+      const [allCaptures, visibleCaptures] = await Promise.all([
+        fetchCaptures(sessionId),
+        fetchCapturesFiltered(sessionId, agent),
+      ]);
+      state.captureAgents = collectCaptureAgents(allCaptures);
+      state.captures = visibleCaptures;
+      renderSessionList(state.sessions);
+      renderCaptureList(state.captures, sessionId);
+      setFeedback(`Output #${state.confirm.seq} deleted from the current review session.`, 'success');
+    }
+    closeConfirm();
+  } catch (e) {
+    setConfirmFeedback('Delete failed: ' + e.message, 'error');
+    setFeedback('Delete failed: ' + e.message, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function refreshDashboardCollections() {
+  const [stats, sessions] = await Promise.all([
+    fetchStats(),
+    fetchSessions(100),
+  ]);
+  state.stats = stats;
+  state.sessions = sessions;
+}
+
+function collectCaptureAgents(captures) {
+  return Array.from(new Set((captures || []).map(c => c.agent).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function filteredCaptures(captures) {
+  const query = state.captureFilters.query.trim().toLowerCase();
+  if (!query) return captures || [];
+  return (captures || []).filter(c => {
+    return String(c.seq).includes(query)
+      || String(c.agent || '').toLowerCase().includes(query)
+      || String(c.description || '').toLowerCase().includes(query);
+  });
+}
+
+function renderEmptySessionPanel(title = 'Select a session to view its outputs', copy = 'Use Sessions for review filters and Search for content lookup across the selected session.') {
+  const rightPanel = document.getElementById('session-right-panel');
+  if (!rightPanel) return;
+  rightPanel.innerHTML = `
+    <div class="flex flex-col items-center justify-center h-full gap-3 text-rp-muted text-sm">
+      <span class="material-symbols-outlined text-4xl opacity-40">folder_open</span>
+      <span>${escHtml(title)}</span>
+      <span class="text-[0.7rem] text-rp-subtle text-center max-w-md">${escHtml(copy)}</span>
+    </div>`;
 }
 
 function selectedSettingsMode() {
@@ -758,6 +998,8 @@ async function loadSessionsView() {
     // Re-select previously selected session
     if (state.selectedSession) {
       selectSession(state.selectedSession);
+    } else {
+      renderEmptySessionPanel();
     }
   } catch (e) {
     document.getElementById('session-list').innerHTML = errorHtml('Failed to load: ' + e.message);
@@ -797,9 +1039,12 @@ function renderSessionList(sessions) {
 }
 
 async function selectSession(sessionId) {
+  state.captureFilters.agent = '';
+  state.captureFilters.query = '';
   state.selectedSession = sessionId;
   state.selectedCapture = null;
   state.captures = [];
+  state.captureAgents = [];
 
   // Highlight selected item in list
   document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
@@ -814,6 +1059,7 @@ async function selectSession(sessionId) {
   try {
     const captures = await fetchCaptures(sessionId);
     state.captures = captures;
+    state.captureAgents = collectCaptureAgents(captures);
     renderCaptureList(captures, sessionId);
   } catch (e) {
     rightPanel.innerHTML = errorHtml('Failed to load captures: ' + e.message);
@@ -822,27 +1068,82 @@ async function selectSession(sessionId) {
 
 function renderCaptureList(captures, sessionId) {
   const rightPanel = document.getElementById('session-right-panel');
+  const filtered = filteredCaptures(captures);
+  const selectedSessionRecord = state.sessions.find(s => s.id === sessionId);
+  const agentValue = state.captureFilters.agent;
+  const queryValue = state.captureFilters.query;
+
+  const header = `
+    <div class="p-3.5 border-b border-border shrink-0 bg-card sticky top-0 z-10 space-y-3">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="material-symbols-outlined text-rp-pine text-[18px]">output</span>
+          <span class="font-heading text-[0.85rem] font-semibold text-rp-text">
+            ${filtered.length} visible capture${filtered.length !== 1 ? 's' : ''}
+          </span>
+          <span class="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wider text-rp-subtle">Review filters</span>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap justify-end">
+          <span class="font-mono text-[0.65rem] text-rp-foam bg-rp-foam/10 px-2 py-1 rounded" title="${escHtml(sessionId)}">${escHtml(truncateId(sessionId, 22))}</span>
+          <button id="session-delete-button" class="inline-flex items-center gap-1 rounded-lg border border-rp-love/30 bg-rp-love/10 px-3 py-1.5 text-[0.72rem] font-semibold text-rp-love transition-colors hover:bg-rp-love/20" onclick="promptDeleteSession(event, '${escHtml(sessionId)}')">
+            <span class="material-symbols-outlined text-[16px]">delete</span> Delete session
+          </button>
+        </div>
+      </div>
+
+      <div class="grid gap-3 lg:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+        <label class="block">
+          <div class="mb-1 text-[0.65rem] font-semibold uppercase tracking-widest text-rp-subtle">Agent filter</div>
+          <div class="relative">
+            <select id="capture-agent-filter" class="w-full appearance-none rounded-lg border border-border bg-background/50 px-3 py-2.5 pr-8 text-[0.78rem] text-rp-text focus:border-rp-pine focus:outline-none focus:ring-1 focus:ring-rp-pine/50" onchange="applyAgentFilter(this.value)">
+              <option value="">All agents in this session</option>
+              ${state.captureAgents.map(agent => `<option value="${escHtml(agent)}" ${agentValue === agent ? 'selected' : ''}>${escHtml(agent)}</option>`).join('')}
+            </select>
+            <span class="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-rp-muted text-[18px]">expand_more</span>
+          </div>
+        </label>
+
+        <label class="block">
+          <div class="mb-1 text-[0.65rem] font-semibold uppercase tracking-widest text-rp-subtle">Capture list filter</div>
+          <div class="relative">
+            <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-rp-muted text-[18px] pointer-events-none">filter_alt</span>
+            <input id="capture-query-filter" type="text" value="${escHtml(queryValue)}" oninput="applyCaptureQueryFilter(this.value)" class="w-full rounded-lg border border-border bg-background/50 py-2.5 pl-9 pr-4 text-[0.78rem] text-rp-text placeholder:text-rp-muted focus:border-rp-pine focus:outline-none focus:ring-1 focus:ring-rp-pine/50" placeholder="Filter this session by seq, agent, or description…" />
+          </div>
+        </label>
+      </div>
+
+      <div class="flex items-start justify-between gap-3 flex-wrap text-[0.72rem] leading-relaxed text-rp-muted">
+        <span>Filters only narrow the current review list. Use <span class="font-semibold text-rp-text">Search</span> for session content lookup and <span class="font-semibold text-rp-text">Settings</span> for the shared search engine.</span>
+        ${selectedSessionRecord && selectedSessionRecord.deleted_at ? '<span class="rounded-full border border-rp-love/20 bg-rp-love/10 px-2 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wider text-rp-love">Session already deleted</span>' : ''}
+      </div>
+    </div>`;
 
   if (!captures || captures.length === 0) {
     rightPanel.innerHTML = `<div class="flex flex-col items-center justify-center h-full gap-3 text-rp-muted text-sm">
-      <span class="material-symbols-outlined text-4xl opacity-40">inbox</span>
-      <span>No captures in this session</span>
+      ${header}
+      <div class="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-rp-muted text-sm">
+        <span class="material-symbols-outlined text-4xl opacity-40">inbox</span>
+        <span>No captures in this session</span>
+        <span class="text-[0.7rem] text-rp-subtle">Try another session. Search stays separate from review filters.</span>
+      </div>
     </div>`;
     return;
   }
 
-  const header = `
-    <div class="p-3.5 border-b border-border flex items-center justify-between shrink-0 bg-card sticky top-0 z-10">
-      <div class="flex items-center gap-2">
-        <span class="material-symbols-outlined text-rp-pine text-[18px]">output</span>
-        <span class="font-heading text-[0.85rem] font-semibold text-rp-text">
-          ${captures.length} capture${captures.length !== 1 ? 's' : ''}
-        </span>
-      </div>
-      <span class="font-mono text-[0.65rem] text-rp-foam bg-rp-foam/10 px-2 py-1 rounded" title="${escHtml(sessionId)}">${escHtml(truncateId(sessionId, 22))}</span>
-    </div>`;
+  if (filtered.length === 0) {
+    rightPanel.innerHTML = `
+      <div class="flex flex-col h-full overflow-hidden relative">
+        ${header}
+        <div class="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-rp-muted text-sm">
+          <span class="material-symbols-outlined text-4xl opacity-40">filter_alt_off</span>
+          <span>No captures match the current review filters</span>
+          <span class="text-[0.7rem] text-rp-subtle text-center max-w-md">Clear the agent or list filter to restore the full capture list for this session. This is NOT global search.</span>
+        </div>
+      </div>`;
+    return;
+  }
 
-  const items = captures.map(c => `
+  const items = filtered.map(c => `
     <div class="flex items-start gap-3 p-4 border-b border-border cursor-pointer hover:bg-muted/30 transition-colors group" onclick="viewCapture('${escHtml(sessionId)}', ${c.seq})">
       <div class="shrink-0 font-mono text-[0.65rem] text-rp-muted pt-1 w-6 text-right">#${c.seq}</div>
       <div class="flex-1 min-w-0">
@@ -891,14 +1192,21 @@ function renderCaptureDetail(capture, sessionId) {
 
       <!-- Capture meta -->
       <div class="p-4 border-b border-border bg-background/50 shrink-0 shadow-sm">
-        <div class="flex items-center gap-3 mb-2.5 flex-wrap">
-          <span class="font-mono font-semibold text-[0.8rem] text-rp-text">Output #${capture.seq}</span>
-          ${agentBadgeHtml(capture.agent)}
-          <span class="text-[0.7rem] text-rp-muted font-mono">${escHtml(formatBytes(capture.bytes))}</span>
-          <span class="text-[0.7rem] text-rp-muted">${escHtml(formatDateTime(capture.captured_at))}</span>
+        <div class="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <div class="flex items-center gap-3 mb-2.5 flex-wrap">
+              <span class="font-mono font-semibold text-[0.8rem] text-rp-text">Output #${capture.seq}</span>
+              ${agentBadgeHtml(capture.agent)}
+              <span class="text-[0.7rem] text-rp-muted font-mono">${escHtml(formatBytes(capture.bytes))}</span>
+              <span class="text-[0.7rem] text-rp-muted">${escHtml(formatDateTime(capture.captured_at))}</span>
+            </div>
+            <div class="text-[0.85rem] text-rp-text font-medium mb-1">${escHtml(capture.description || '(no description)')}</div>
+            ${capture.child_session_id ? `<div class="text-[0.7rem] text-rp-muted font-mono mt-2">child: <span class="text-rp-foam bg-rp-foam/10 px-1.5 py-0.5 rounded">${escHtml(capture.child_session_id)}</span></div>` : ''}
+          </div>
+          <button id="capture-delete-button" class="inline-flex items-center gap-1 rounded-lg border border-rp-love/30 bg-rp-love/10 px-3 py-1.5 text-[0.72rem] font-semibold text-rp-love transition-colors hover:bg-rp-love/20" onclick="promptDeleteCapture(event, '${escHtml(sessionId)}', ${capture.seq})">
+            <span class="material-symbols-outlined text-[16px]">delete</span> Delete output
+          </button>
         </div>
-        <div class="text-[0.85rem] text-rp-text font-medium mb-1">${escHtml(capture.description || '(no description)')}</div>
-        ${capture.child_session_id ? `<div class="text-[0.7rem] text-rp-muted font-mono mt-2">child: <span class="text-rp-foam bg-rp-foam/10 px-1.5 py-0.5 rounded">${escHtml(capture.child_session_id)}</span></div>` : ''}
       </div>
 
       <!-- Content -->
@@ -906,6 +1214,59 @@ function renderCaptureDetail(capture, sessionId) {
         <pre class="font-mono text-[0.75rem] leading-relaxed text-rp-text p-5 h-full overflow-y-auto whitespace-pre-wrap break-words">${escHtml(capture.content || '')}</pre>
       </div>
     </div>`;
+}
+
+async function applyAgentFilter(agent) {
+  if (!state.selectedSession) return;
+  state.captureFilters.agent = agent || '';
+  state.captureFilters.query = '';
+  state.selectedCapture = null;
+  const rightPanel = document.getElementById('session-right-panel');
+  if (rightPanel) rightPanel.innerHTML = spinnerHtml('Applying agent filter…');
+
+  try {
+    const captures = await fetchCapturesFiltered(state.selectedSession, state.captureFilters.agent);
+    state.captures = captures;
+    renderCaptureList(captures, state.selectedSession);
+  } catch (e) {
+    if (rightPanel) rightPanel.innerHTML = errorHtml('Failed to apply agent filter: ' + e.message);
+  }
+}
+
+function applyCaptureQueryFilter(value) {
+  state.captureFilters.query = value || '';
+  if (!state.selectedSession) return;
+  renderCaptureList(state.captures, state.selectedSession);
+}
+
+function promptDeleteSession(event, sessionId) {
+  if (event) event.stopPropagation();
+  openConfirm({
+    action: 'delete_session',
+    sessionId,
+    title: 'Delete session from dashboard review?',
+    copy: 'This soft-deletes the selected session. The session stays in history with a deleted badge, but it is removed from the active dashboard state.',
+    meta: [
+      { label: 'Session', value: sessionId },
+      { label: 'Effect', value: 'Soft delete session review state' },
+    ],
+  });
+}
+
+function promptDeleteCapture(event, sessionId, seq) {
+  if (event) event.stopPropagation();
+  openConfirm({
+    action: 'delete_capture',
+    sessionId,
+    seq,
+    title: 'Delete output from this session?',
+    copy: 'This hard-deletes the selected output from the current session review flow. Remaining outputs stay available.',
+    meta: [
+      { label: 'Session', value: sessionId },
+      { label: 'Output', value: `#${seq}` },
+      { label: 'Effect', value: 'Hard delete selected output' },
+    ],
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════ SEARCH VIEW

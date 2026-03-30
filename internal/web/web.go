@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,7 +47,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("PUT /api/config", s.handleUpdateConfig)
 	s.mux.HandleFunc("GET /api/sessions", s.handleSessions)
+	s.mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("GET /api/sessions/{id}/captures", s.handleCaptures)
+	s.mux.HandleFunc("DELETE /api/sessions/{id}/captures/{seq}", s.handleDeleteCapture)
 	s.mux.HandleFunc("GET /api/sessions/{id}/captures/{seq}", s.handleCapture)
 	s.mux.HandleFunc("GET /api/sessions/{id}/search", s.handleSearch)
 
@@ -70,7 +74,7 @@ func (s *Server) routes() {
 
 func cors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
@@ -79,6 +83,13 @@ type configResponse struct {
 	Scope         string   `json:"scope"`
 	Immediate     []string `json:"immediate"`
 	RestartNeeded []string `json:"restart_required"`
+}
+
+type actionResponse struct {
+	OK        bool   `json:"ok"`
+	Action    string `json:"action"`
+	SessionID string `json:"session_id,omitempty"`
+	Seq       int    `json:"seq,omitempty"`
 }
 
 func (s *Server) currentSearchMode() store.SearchMode {
@@ -187,6 +198,32 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("session id is required"))
+		return
+	}
+
+	exists, err := s.rootSessionExists(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, fmt.Errorf("session not found: %s", id))
+		return
+	}
+
+	if err := s.store.MarkSessionDeleted(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, actionResponse{OK: true, Action: "delete_session", SessionID: id})
+}
+
 func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
 	cors(w)
 	id := r.PathValue("id")
@@ -227,6 +264,34 @@ func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleDeleteCapture(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	id := strings.TrimSpace(r.PathValue("id"))
+	seqStr := r.PathValue("seq")
+
+	seq, err := strconv.Atoi(seqStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid seq: %s", seqStr))
+		return
+	}
+
+	if _, err := s.store.GetCaptureBySeq(id, seq); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	if err := s.store.DeleteCapture(id, seq); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, actionResponse{OK: true, Action: "delete_capture", SessionID: id, Seq: seq})
 }
 
 func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +405,20 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-func Run(st *store.Store, addr, version string, searchMode store.SearchMode, configPath string) error {
+func (s *Server) rootSessionExists(id string) (bool, error) {
+	sessions, err := s.store.ListRootSessions(int(^uint(0) >> 1))
+	if err != nil {
+		return false, err
+	}
+	for _, session := range sessions {
+		if session.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func Run(st *store.Store, addr, version string, searchMode store.SearchMode, configPath string, openBrowser bool) error {
 	srv := New(st, searchMode, configPath)
 	httpServer := &http.Server{
 		Addr:              addr,
@@ -349,6 +427,12 @@ func Run(st *store.Store, addr, version string, searchMode store.SearchMode, con
 	}
 
 	fmt.Printf("Context Bridge dashboard → http://%s\n", addr)
+
+	if openBrowser {
+		if err := openURL("http://" + addr); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to open browser: %v\n", err)
+		}
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -368,6 +452,23 @@ func Run(st *store.Store, addr, version string, searchMode store.SearchMode, con
 	case err := <-errCh:
 		return err
 	}
+}
+
+func openURL(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

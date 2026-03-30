@@ -52,10 +52,10 @@ which opencode  # or wherever OpenCode is installed
 Install the latest release binary:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Andres77872/context-bridge/main/script/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/Andres77872/context-bridge/main/script/install.sh | bash
 ```
 
-This installs the binary to `${XDG_BIN_HOME:-$HOME/.local/bin}`.
+This fetches a **release binary** from GitHub Releases and installs it to `${XDG_BIN_HOME:-$HOME/.local/bin}`. Bash is required.
 
 Verify:
 
@@ -71,19 +71,20 @@ context-bridge version
 | `INSTALL_DIR` | `$HOME/.local/bin` | Override binary destination |
 | `NO_CHECKSUM` | `0` | Set to `1` to skip checksum verification |
 
-### Smart update behavior
+### Version comparison behavior
 
-The installer detects your installed version and compares it with the latest remote release:
+The installer compares the installed version with the target version:
 
-- **Already latest** — skips reinstall, exits cleanly
-- **Remote newer** — updates to latest
-- **Local newer** — warns and skips (dev build scenario)
+- **Versions match** — skips install, exits cleanly
+- **Versions differ** — installs the target version (including downgrades)
 
-To force reinstall when local is newer, set `VERSION` explicitly:
+To install a specific version:
 
 ```bash
-VERSION=v0.3.0 curl -sSL https://raw.githubusercontent.com/.../install.sh | sh
+VERSION=v0.3.0 curl -sSL https://raw.githubusercontent.com/Andres77872/context-bridge/main/script/install.sh | bash
 ```
+
+If you already have `v0.3.0` installed, the installer skips. If you have `v0.4.0` and request `v0.3.0`, it will downgrade.
 
 ### Build from source
 
@@ -168,16 +169,7 @@ This means agents using Context Bridge receive guidance specific to the active m
 - FTS5 operators: AND (implicit), OR (`term1 OR term2`), NOT (`term1 NOT term2`)
 - Results ranked by BM25 score
 
-### 4. Import existing data (optional)
-
-If you have legacy session data from OpenCode's tool-output:
-
-```bash
-context-bridge migrate
-# imported N capture(s) from ~/.local/share/opencode/tool-output/sessions
-```
-
-### 5. Verify everything works
+### 4. Verify everything works
 
 ```bash
 # Binary works
@@ -227,14 +219,20 @@ Opens an interactive terminal browser for captured outputs.
 context-bridge tui
 ```
 
-### `context-bridge migrate`
+### `context-bridge web`
 
-Imports legacy data from OpenCode's tool-output directory.
+Starts a web dashboard for browsing captured outputs.
 
 ```bash
-context-bridge migrate
-context-bridge migrate --from /path/to/sessions
+context-bridge web
+context-bridge web --addr 127.0.0.1:7440
 ```
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXT_BRIDGE_WEB_ADDR` | `127.0.0.1:7440` | Web dashboard listen address |
 
 ### `context-bridge version`
 
@@ -380,36 +378,42 @@ Use `read` with `session_id="ses_abc123"` and the output # to read full content.
 
 ## TUI Browser
 
-Launch with `context-bridge tui`. A read-only terminal interface for browsing captured outputs.
+Launch with `context-bridge tui`. A terminal interface for browsing captured outputs.
 
-### Screens
+### Tabs
 
-| Screen | Description |
-|--------|-------------|
-| **Dashboard** | List of sessions with stats |
-| **Session** | List of outputs for one session |
-| **Capture** | Full output content with scroll |
-| **Search** | Full-text search input |
-| **SearchResults** | Search matches with snippets |
+The TUI has 3 tabs:
+
+| Tab | Content |
+|-----|---------|
+| **Overview** | Stats card + welcome screen |
+| **Sessions** | Sessions list + captures + capture detail |
+| **Search** | Search input + results |
 
 ### Key Bindings
 
-| Key | Dashboard | Session | Capture | Search | Results |
-|-----|-----------|---------|---------|--------|---------|
-| `j` / `↓` | next session | next output | — | — | next result |
-| `k` / `↑` | prev session | prev output | — | — | prev result |
-| `enter` | open session | open output | — | submit query | open result |
-| `/` | open search | open search | open search | — | refine search |
-| `f` | — | filter mode | — | — | — |
-| `esc` | — | back to dashboard | back | cancel | back |
-| `q` | quit | back to dashboard | back | cancel | back |
-| `ctrl+c` | quit | quit | quit | quit | quit |
-| `pgup`/`pgdn` | — | — | page scroll | — | — |
-| `home`/`end` | — | — | top/bottom | — | — |
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `enter` | Select / open |
+| `tab` / `1` / `2` | Switch tabs |
+| `/` | Filter mode (in sessions/captures list) |
+| `s` | Search in current session |
+| `p` | Settings (search mode: regex/fts5) |
+| `i` | Install plugin (Overview tab) |
+| `x` | Delete selected session/capture (with confirmation) |
+| `y` | Confirm delete |
+| `n` | Cancel delete |
+| `esc` | Back / cancel |
+| `q` | Back or quit |
+| `ctrl+c` | Quit |
+| `pgup`/`pgdn` | Page scroll (in capture detail) |
+| `home`/`end` | Scroll to top/bottom (in capture detail) |
 
-### Filter Mode (Session screen)
+### Filter Mode (sessions/captures list)
 
-Press `f` to activate inline filtering. Type to filter the output list client-side. Press `esc` or `enter` to exit filter mode.
+Press `/` to activate inline filtering. Type to filter the output list client-side. Press `esc` or `enter` to exit filter mode.
 
 ### Scroll Indicators
 
@@ -523,15 +527,16 @@ Key components:
 |-----------|------|----------------|
 | Store | `internal/store/store.go` | SQLite schema, queries, FTS |
 | MCP | `internal/mcp/mcp.go` | Tool definitions, stdio server |
-| TUI | `internal/tui/*.go` | Bubble Tea browser |
+| TUI | `internal/tui/*.go` | Bubble Tea terminal browser |
+| Web | `internal/web/web.go` | Web dashboard + API |
 | HTTP | `internal/server/server.go` | Plugin-to-binary bridge |
+| Config | `internal/config/config.go` | Configuration loading, search mode |
 | Plugin | `plugin/opencode/context-bridge.ts` | OpenCode hooks, auto-spawn |
 
 ## Limitations
 
 - **No cross-session search** — Search is scoped to one session tree
 - **No purge/retention** — Data is retained forever (no TTL)
-- **No destructive actions in TUI** — Delete buttons exist but aren't wired
 
 ## Related Projects
 

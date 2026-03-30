@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -eu
 
 REPO="${REPO:-Andres77872/context-bridge}"
@@ -103,6 +103,10 @@ print_path_hint() {
   esac
 }
 
+normalize_version() {
+  printf '%s' "$1" | sed 's/^v//'
+}
+
 get_installed_version() {
   binary_path="$1"
   if [ -x "$binary_path" ]; then
@@ -112,33 +116,9 @@ get_installed_version() {
   fi
 }
 
-semver_cmp() {
-  a=$(printf '%s' "$1" | sed 's/^v//')
-  b=$(printf '%s' "$2" | sed 's/^v//')
-  a_major=$(printf '%s' "$a" | cut -d. -f1)
-  a_minor=$(printf '%s' "$a" | cut -d. -f2)
-  a_patch=$(printf '%s' "$a" | cut -d. -f3)
-  b_major=$(printf '%s' "$b" | cut -d. -f1)
-  b_minor=$(printf '%s' "$b" | cut -d. -f2)
-  b_patch=$(printf '%s' "$b" | cut -d. -f3)
-  a_major=$(expr "$a_major" + 0 2>/dev/null) || a_major=0
-  a_minor=$(expr "$a_minor" + 0 2>/dev/null) || a_minor=0
-  a_patch=$(expr "$a_patch" + 0 2>/dev/null) || a_patch=0
-  b_major=$(expr "$b_major" + 0 2>/dev/null) || b_major=0
-  b_minor=$(expr "$b_minor" + 0 2>/dev/null) || b_minor=0
-  b_patch=$(expr "$b_patch" + 0 2>/dev/null) || b_patch=0
-  if [ "$a_major" -gt "$b_major" ]; then return 1; fi
-  if [ "$a_major" -lt "$b_major" ]; then return 2; fi
-  if [ "$a_minor" -gt "$b_minor" ]; then return 1; fi
-  if [ "$a_minor" -lt "$b_minor" ]; then return 2; fi
-  if [ "$a_patch" -gt "$b_patch" ]; then return 1; fi
-  if [ "$a_patch" -lt "$b_patch" ]; then return 2; fi
-  return 0
-}
-
 main() {
   need_cmd_any curl wget
-  need_cmd uname mktemp awk sed tar expr cut
+  need_cmd uname mktemp awk sed tar cut
 
   os=$(detect_os)
   arch=$(detect_arch)
@@ -157,36 +137,43 @@ main() {
   fi
 
   install_dir=$(pick_install_dir)
-
-  binary_path=""
-  if [ -x "${install_dir}/${BINARY_NAME}" ]; then
-    binary_path="${install_dir}/${BINARY_NAME}"
-  elif command -v "$BINARY_NAME" >/dev/null 2>&1; then
-    binary_path="$(command -v "$BINARY_NAME")"
+  binary_path="${install_dir}/${BINARY_NAME}"
+  
+  installed_version=""
+  if [ -x "$binary_path" ]; then
+    installed_version=$(get_installed_version "$binary_path")
   fi
 
-  if [ -n "$binary_path" ]; then
-    installed_version=$(get_installed_version "$binary_path")
-    if [ -n "$installed_version" ]; then
-      semver_cmp "$installed_version" "$tag"
-      cmp_result=$?
-      if [ $cmp_result -eq 0 ]; then
-        log "Already installed at latest version: $tag"
-        log "Location: $binary_path"
-        exit 0
-      elif [ $cmp_result -eq 1 ]; then
-        log "Warning: installed version ($installed_version) is newer than remote ($tag)"
-        log "This may be a dev build. Set VERSION=$tag to force reinstall."
-        exit 0
-      fi
-      log "Updating: $installed_version -> $tag"
-    fi
+  normalized_installed=""
+  if [ -n "$installed_version" ]; then
+    normalized_installed=$(normalize_version "$installed_version")
+  fi
+  normalized_target=$(normalize_version "$tag")
+
+  log "Current version: ${installed_version:-<not installed>}"
+  log "Target version:  $tag"
+  log "Install path:    $binary_path"
+
+  if [ -n "$normalized_installed" ] && [ "$normalized_installed" = "$normalized_target" ]; then
+    log ""
+    log "Action: SKIP (versions match)"
+    log "Already installed at version $tag"
+    log "Location: $binary_path"
+    exit 0
+  fi
+
+  log ""
+  if [ -n "$installed_version" ]; then
+    log "Action: INSTALL (current '$installed_version' differs from target '$tag')"
+  else
+    log "Action: INSTALL (not currently installed)"
   fi
 
   log "Installing $BINARY_NAME $tag ($os/$arch)"
 
-  archive_name="${BINARY_NAME}_${tag}_${os}_${arch}.tar.gz"
-  checksums_name="${BINARY_NAME}_${tag}_checksums.txt"
+  archive_version=$(normalize_version "$tag")
+  archive_name="${BINARY_NAME}_${archive_version}_${os}_${arch}.tar.gz"
+  checksums_name="${BINARY_NAME}_${archive_version}_checksums.txt"
 
   base_url="https://github.com/${REPO}/releases/download/${tag}"
 

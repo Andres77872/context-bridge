@@ -32,17 +32,20 @@ func seedSession(t *testing.T, st *store.Store, sessionID string, captures []str
 }) {
 	t.Helper()
 	for _, c := range captures {
-		_, err := st.ImportCapture(sessionID, store.CaptureInput{
+		record, err := st.AddCapture(store.CaptureInput{
 			ParentSessionID: sessionID,
 			ChildSessionID:  "child-" + sessionID,
-			CallID:          "call-" + sessionID,
+			CallID:          "call-" + sessionID + "-" + c.agent + "-" + c.desc,
 			Agent:           c.agent,
 			Description:     c.desc,
 			Content:         c.content,
 			CapturedAt:      time.Now().UTC(),
-		}, c.seq, "", c.desc, len(c.content), false)
+		})
 		if err != nil {
 			t.Fatalf("seed capture %d: %v", c.seq, err)
+		}
+		if record.Seq != c.seq {
+			t.Fatalf("expected seq %d, got %d", c.seq, record.Seq)
 		}
 	}
 }

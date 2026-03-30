@@ -53,6 +53,165 @@ func TestResolveConfigPathUsesUserConfigDir(t *testing.T) {
 	}
 }
 
+func TestResolveConfigDirUsesConfigPathOverrideDirectory(t *testing.T) {
+	dir := ResolveConfigDir(func(key string) (string, bool) {
+		if key == "CONTEXT_BRIDGE_CONFIG" {
+			return "/custom/path/config.json", true
+		}
+		return "", false
+	}, nil)
+
+	if dir != "/custom/path" {
+		t.Fatalf("expected override directory %q, got %q", "/custom/path", dir)
+	}
+}
+
+func TestResolveConfigDirUsesUserConfigDir(t *testing.T) {
+	dir := ResolveConfigDir(func(string) (string, bool) { return "", false }, func() (string, error) {
+		return "/home/user/.config", nil
+	})
+
+	expected := filepath.Join("/home/user/.config", "context-bridge")
+	if dir != expected {
+		t.Fatalf("expected %q, got %q", expected, dir)
+	}
+}
+
+func TestResolveDBPathUsesEnvVar(t *testing.T) {
+	path := ResolveDBPath(func(key string) (string, bool) {
+		if key == "CONTEXT_BRIDGE_DB" {
+			return "/custom/data/store.db", true
+		}
+		return "", false
+	}, nil)
+
+	if path != "/custom/data/store.db" {
+		t.Fatalf("expected env override path, got %q", path)
+	}
+}
+
+func TestResolveDBPathUsesXDGDataHome(t *testing.T) {
+	path := ResolveDBPath(func(key string) (string, bool) {
+		if key == "XDG_DATA_HOME" {
+			return "/xdg/data", true
+		}
+		return "", false
+	}, nil)
+
+	expected := filepath.Join("/xdg/data", "context-bridge", "store.db")
+	if path != expected {
+		t.Fatalf("expected %q, got %q", expected, path)
+	}
+}
+
+func TestResolveDBPathFallsBackToLocalFileWhenHomeUnavailable(t *testing.T) {
+	path := ResolveDBPath(func(string) (string, bool) { return "", false }, func() (string, error) {
+		return "", os.ErrNotExist
+	})
+
+	if path != "context-bridge.db" {
+		t.Fatalf("expected fallback DB path %q, got %q", "context-bridge.db", path)
+	}
+}
+
+func TestResolveDataDirUsesDBOverrideDirectory(t *testing.T) {
+	dir := ResolveDataDir(func(key string) (string, bool) {
+		if key == "CONTEXT_BRIDGE_DB" {
+			return "/custom/data/store.db", true
+		}
+		return "", false
+	}, nil)
+
+	if dir != "/custom/data" {
+		t.Fatalf("expected override directory %q, got %q", "/custom/data", dir)
+	}
+}
+
+func TestResolveDataDirUsesXDGDataHome(t *testing.T) {
+	dir := ResolveDataDir(func(key string) (string, bool) {
+		if key == "XDG_DATA_HOME" {
+			return "/xdg/data", true
+		}
+		return "", false
+	}, nil)
+
+	expected := filepath.Join("/xdg/data", "context-bridge")
+	if dir != expected {
+		t.Fatalf("expected %q, got %q", expected, dir)
+	}
+}
+
+func TestResolveDataDirFallsBackToUserHome(t *testing.T) {
+	dir := ResolveDataDir(func(string) (string, bool) { return "", false }, func() (string, error) {
+		return "/home/user", nil
+	})
+
+	expected := filepath.Join("/home/user", ".local", "share", "context-bridge")
+	if dir != expected {
+		t.Fatalf("expected %q, got %q", expected, dir)
+	}
+}
+
+func TestResolveUninstallScopeUsesOnlyExplicitOverridePaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config-default"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share-default"))
+	t.Setenv("CONTEXT_BRIDGE_CONFIG", filepath.Join(home, "override-config", "config.json"))
+	t.Setenv("CONTEXT_BRIDGE_DB", filepath.Join(home, "override-data", "store.db"))
+
+	gotConfigDir := ResolveConfigDir(os.LookupEnv, os.UserConfigDir)
+	gotDataDir := ResolveDataDir(os.LookupEnv, os.UserHomeDir)
+
+	wantConfigDir := filepath.Join(home, "override-config")
+	wantDataDir := filepath.Join(home, "override-data")
+	defaultConfigDir := filepath.Join(home, ".config-default", "context-bridge")
+	defaultDataDir := filepath.Join(home, ".local", "share-default", "context-bridge")
+
+	if gotConfigDir != wantConfigDir {
+		t.Fatalf("expected resolved config dir %q, got %q", wantConfigDir, gotConfigDir)
+	}
+	if gotDataDir != wantDataDir {
+		t.Fatalf("expected resolved data dir %q, got %q", wantDataDir, gotDataDir)
+	}
+	if gotConfigDir == defaultConfigDir {
+		t.Fatalf("resolved config dir should not fall back to default XDG target %q", defaultConfigDir)
+	}
+	if gotDataDir == defaultDataDir {
+		t.Fatalf("resolved data dir should not fall back to default XDG target %q", defaultDataDir)
+	}
+}
+
+func TestResolveUninstallScopeUsesOnlyXDGOverridePaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config-override"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data-override"))
+	t.Setenv("CONTEXT_BRIDGE_CONFIG", "")
+	t.Setenv("CONTEXT_BRIDGE_DB", "")
+
+	gotConfigDir := ResolveConfigDir(os.LookupEnv, os.UserConfigDir)
+	gotDataDir := ResolveDataDir(os.LookupEnv, os.UserHomeDir)
+
+	wantConfigDir := filepath.Join(home, "xdg-config-override", "context-bridge")
+	wantDataDir := filepath.Join(home, "xdg-data-override", "context-bridge")
+	defaultConfigDir := filepath.Join(home, ".config", "context-bridge")
+	defaultDataDir := filepath.Join(home, ".local", "share", "context-bridge")
+
+	if gotConfigDir != wantConfigDir {
+		t.Fatalf("expected resolved config dir %q, got %q", wantConfigDir, gotConfigDir)
+	}
+	if gotDataDir != wantDataDir {
+		t.Fatalf("expected resolved data dir %q, got %q", wantDataDir, gotDataDir)
+	}
+	if gotConfigDir == defaultConfigDir {
+		t.Fatalf("resolved config dir should not add default XDG cleanup target %q", defaultConfigDir)
+	}
+	if gotDataDir == defaultDataDir {
+		t.Fatalf("resolved data dir should not add default XDG cleanup target %q", defaultDataDir)
+	}
+}
+
 func TestLoadConfigReturnsDefaultsWhenFileMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nonexistent.json")
 	cfg, err := LoadConfig(path, false)

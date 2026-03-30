@@ -5,10 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,10 +17,18 @@ import (
 	"context-bridge/internal/server"
 	"context-bridge/internal/store"
 	"context-bridge/internal/tui"
+	"context-bridge/internal/uninstall"
 	"context-bridge/internal/web"
 )
 
 var version = "dev"
+
+var (
+	commandStdin  io.Reader = os.Stdin
+	commandStdout io.Writer = os.Stdout
+	commandStderr io.Writer = os.Stderr
+	runUninstall            = uninstall.Run
+)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -44,6 +52,8 @@ func run(args []string) error {
 		return cmdTUI(args[1:])
 	case "web":
 		return cmdWeb(args[1:])
+	case "uninstall":
+		return cmdUninstall(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -159,28 +169,32 @@ func cmdWeb(args []string) error {
 }
 
 func openStore() (*store.Store, error) {
-	return store.Open(defaultDBPath())
+	return store.Open(config.ResolveDBPath(os.LookupEnv, os.UserHomeDir))
 }
 
-func defaultDBPath() string {
-	if value := os.Getenv("CONTEXT_BRIDGE_DB"); value != "" {
-		return value
-	}
-
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "context-bridge.db"
-		}
-		base = filepath.Join(home, ".local", "share")
-	}
-
-	return filepath.Join(base, "context-bridge", "store.db")
-}
 func defaultHTTPAddr() string {
 	port := envOrDefault("CONTEXT_BRIDGE_PORT", "7438")
 	return "127.0.0.1:" + port
+}
+
+func cmdUninstall(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "Print the uninstall plan without removing artifacts")
+	mode := fs.String("mode", "", "Removal mode for non-interactive uninstall: full or preserve-data")
+	yes := fs.Bool("yes", false, "Execute uninstall non-interactively; requires --mode")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	return runUninstall(uninstall.Options{
+		Mode:        uninstall.Mode(*mode),
+		DryRun:      *dryRun,
+		AssumeYes:   *yes,
+		ExcludePath: os.Getenv("CONTEXT_BRIDGE_UNINSTALL_EXCLUDE_PATH"),
+		Stdin:       commandStdin,
+		Stdout:      commandStdout,
+		Stderr:      commandStderr,
+	})
 }
 
 func envOrDefault(key, fallback string) string {
@@ -198,5 +212,6 @@ Usage:
   context-bridge mcp      Start MCP stdio server for agent-facing tools
   context-bridge tui      Start read-only terminal browser
   context-bridge web      Start web dashboard (default: 127.0.0.1:7440)
+  context-bridge uninstall Remove project-owned binaries and integrations
   context-bridge version  Print version`)
 }

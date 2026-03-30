@@ -45,6 +45,41 @@ func ResolveConfigPath(lookupEnv func(string) (string, bool), userConfigDir func
 	return filepath.Join(base, "context-bridge", "config.json")
 }
 
+func ResolveConfigDir(lookupEnv func(string) (string, bool), userConfigDir func() (string, error)) string {
+	path := ResolveConfigPath(lookupEnv, userConfigDir)
+	if path == "" {
+		return ""
+	}
+	return filepath.Dir(path)
+}
+
+func ResolveDBPath(lookupEnv func(string) (string, bool), userHomeDir func() (string, error)) string {
+	if path, ok := lookupEnv("CONTEXT_BRIDGE_DB"); ok && path != "" {
+		return path
+	}
+
+	base := ""
+	if path, ok := lookupEnv("XDG_DATA_HOME"); ok && path != "" {
+		base = path
+	} else {
+		home, err := userHomeDir()
+		if err != nil {
+			return "context-bridge.db"
+		}
+		base = filepath.Join(home, ".local", "share")
+	}
+
+	return filepath.Join(base, "context-bridge", "store.db")
+}
+
+func ResolveDataDir(lookupEnv func(string) (string, bool), userHomeDir func() (string, error)) string {
+	path := ResolveDBPath(lookupEnv, userHomeDir)
+	if path == "" {
+		return ""
+	}
+	return filepath.Dir(path)
+}
+
 func LoadConfig(path string, explicit bool) (Config, error) {
 	cfg := DefaultConfig()
 

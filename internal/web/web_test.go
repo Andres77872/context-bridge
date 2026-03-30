@@ -168,6 +168,235 @@ func TestHandleSearchReflectsModeFTS5(t *testing.T) {
 	}
 }
 
+func TestHandleDeleteSessionSoftDeletesAndReturnsActionResponse(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_delete", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_delete", []struct {
+		seq     int
+		agent   string
+		desc    string
+		content string
+	}{
+		{seq: 1, agent: "grep", desc: "capture", content: "session content"},
+	})
+
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/ses_delete", nil)
+	req.SetPathValue("id", "ses_delete")
+
+	srv.handleDeleteSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp actionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if !resp.OK || resp.Action != "delete_session" || resp.SessionID != "ses_delete" {
+		t.Fatalf("unexpected action response: %+v", resp)
+	}
+
+	sessions, err := st.ListRootSessions(10)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].DeletedAt == nil {
+		t.Fatal("expected session to be soft-deleted")
+	}
+
+	captures, err := st.ListCaptures("ses_delete", "")
+	if err != nil {
+		t.Fatalf("list captures: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("expected capture to remain after session delete, got %d", len(captures))
+	}
+}
+
+func TestHandleDeleteSessionReturns404ForMissingSession(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/ses_missing", nil)
+	req.SetPathValue("id", "ses_missing")
+
+	srv.handleDeleteSession(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "session not found") {
+		t.Fatalf("expected session not found error, got %s", rec.Body.String())
+	}
+}
+
+func TestHandleDeleteCaptureHardDeletesAndReturnsActionResponse(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_capture_delete", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_capture_delete", []struct {
+		seq     int
+		agent   string
+		desc    string
+		content string
+	}{
+		{seq: 1, agent: "grep", desc: "first", content: "one"},
+		{seq: 2, agent: "explore", desc: "second", content: "two"},
+	})
+
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/ses_capture_delete/captures/1", nil)
+	req.SetPathValue("id", "ses_capture_delete")
+	req.SetPathValue("seq", "1")
+
+	srv.handleDeleteCapture(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp actionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if !resp.OK || resp.Action != "delete_capture" || resp.SessionID != "ses_capture_delete" || resp.Seq != 1 {
+		t.Fatalf("unexpected action response: %+v", resp)
+	}
+
+	captures, err := st.ListCaptures("ses_capture_delete", "")
+	if err != nil {
+		t.Fatalf("list captures: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("expected 1 capture after delete, got %d", len(captures))
+	}
+	if captures[0].Seq != 2 {
+		t.Fatalf("expected seq 2 to remain, got %d", captures[0].Seq)
+	}
+}
+
+func TestHandleDeleteCaptureReturns400ForInvalidSeq(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/ses_bad/captures/nope", nil)
+	req.SetPathValue("id", "ses_bad")
+	req.SetPathValue("seq", "nope")
+
+	srv.handleDeleteCapture(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid seq") {
+		t.Fatalf("expected invalid seq error, got %s", rec.Body.String())
+	}
+}
+
+func TestHandleDeleteCaptureReturns404ForMissingCapture(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_missing_capture", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_missing_capture", []struct {
+		seq     int
+		agent   string
+		desc    string
+		content string
+	}{
+		{seq: 1, agent: "grep", desc: "first", content: "one"},
+	})
+
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/ses_missing_capture/captures/9", nil)
+	req.SetPathValue("id", "ses_missing_capture")
+	req.SetPathValue("seq", "9")
+
+	srv.handleDeleteCapture(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not found") {
+		t.Fatalf("expected not found error, got %s", rec.Body.String())
+	}
+}
+
+func TestHandleCapturesFiltersByAgentQuery(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_filter", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_filter", []struct {
+		seq     int
+		agent   string
+		desc    string
+		content string
+	}{
+		{seq: 1, agent: "grep", desc: "search files", content: "one"},
+		{seq: 2, agent: "explore", desc: "audit ui", content: "two"},
+	})
+
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/ses_filter/captures?agent=grep", nil)
+	req.SetPathValue("id", "ses_filter")
+
+	srv.handleCaptures(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var captures []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &captures); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("expected 1 capture, got %d", len(captures))
+	}
+	if captures[0]["agent"] != "grep" {
+		t.Fatalf("expected grep capture, got %#v", captures[0]["agent"])
+	}
+}
+
+func TestRoutesServeHTMLWithParityControls(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{
+		`id="confirm-modal"`,
+		`id="feedback-banner"`,
+		`id="capture-agent-filter"`,
+		`id="capture-query-filter"`,
+		`id="session-delete-button"`,
+		`id="capture-delete-button"`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected html to contain %s", needle)
+		}
+	}
+}
+
 func TestHandleSearchFTS5InvalidSyntax(t *testing.T) {
 	st := openTestStore(t)
 	if err := st.EnsureSession("ses_fts5_err", ""); err != nil {

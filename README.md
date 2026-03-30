@@ -93,6 +93,71 @@ cd /path/to/context-bridge
 go install ./cmd/context-bridge
 ```
 
+## Uninstall
+
+context-bridge ships with both a hosted uninstall entrypoint and a native CLI command. Both use the same uninstall engine and the same safety rules.
+
+### Hosted uninstall
+
+Run the hosted uninstall flow with:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Andres77872/context-bridge/main/script/uninstall.sh | bash
+```
+
+The script downloads a temporary release binary, verifies checksums by default, and runs `context-bridge uninstall` from that temporary binary instead of trusting whatever `context-bridge` currently resolves to in `PATH`.
+
+### Native uninstall
+
+If you already have a working binary available, you can start the same flow directly:
+
+```bash
+context-bridge uninstall
+```
+
+### Confirmation and modes
+
+Every standard uninstall run is interactive. The prompt always:
+
+- requires confirmation before anything is removed
+- offers **full removal** and **preserve-data** modes
+- selects **full removal by default**
+
+Mode behavior:
+
+- **Full removal** — removes project-owned binaries, OpenCode integration, the resolved config footprint, and the resolved data footprint
+- **Preserve data** — removes project-owned binaries and OpenCode integration, but keeps both config and data directories intact
+
+### Non-interactive uninstall
+
+Non-interactive destructive execution requires both an explicit mode and `--yes`:
+
+```bash
+context-bridge uninstall --mode=full --yes
+context-bridge uninstall --mode=preserve-data --yes
+```
+
+Rules:
+
+- `--yes` without `--mode` is rejected
+- `--mode` without `--yes` is rejected
+- `--dry-run` prints the uninstall plan without removing anything
+
+```bash
+context-bridge uninstall --dry-run
+```
+
+### Cleanup boundary and overrides
+
+Full uninstall removes only the known project-owned footprint:
+
+- the release-installed binary target
+- a stale `~/go/bin/context-bridge` binary when present
+- the OpenCode plugin file and `mcp.context-bridge` registration
+- the **actively resolved** config and data paths for this installation
+
+If you use `CONTEXT_BRIDGE_CONFIG`, `CONTEXT_BRIDGE_DB`, `XDG_CONFIG_HOME`, or `XDG_DATA_HOME`, uninstall follows those resolved paths only. It does **not** broaden cleanup by scanning default XDG config/data locations for stale leftovers, and it never deletes shared parent directories such as `~/.local/bin/`, `~/go/bin/`, or `~/.config/opencode/`.
+
 ### Configure OpenCode
 
 Add to `~/.config/opencode/opencode.json`:
@@ -241,6 +306,37 @@ Prints the binary version.
 ```bash
 context-bridge version
 ```
+
+### `context-bridge uninstall`
+
+Starts the official uninstall flow.
+
+```bash
+context-bridge uninstall
+context-bridge uninstall --dry-run
+context-bridge uninstall --mode=full --yes
+context-bridge uninstall --mode=preserve-data --yes
+```
+
+Behavior:
+
+- interactive by default, with mandatory confirmation
+- **full removal** is preselected in the prompt
+- preserve-data keeps both resolved config and data directories
+- non-interactive uninstall requires both `--mode` and `--yes`
+
+**Environment variables affecting uninstall scope:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INSTALL_DIR` | `$HOME/.local/bin` | Release binary target checked for uninstall |
+| `XDG_BIN_HOME` | `$HOME/.local/bin` | Fallback binary target when `INSTALL_DIR` is not set |
+| `GOBIN` | `$HOME/go/bin` | Preferred stale `go install` binary target |
+| `GOPATH` | `$HOME/go` | Used to derive stale `go install` binary target when `GOBIN` is unset |
+| `CONTEXT_BRIDGE_CONFIG` | resolved config path | Active config path used for uninstall scope |
+| `CONTEXT_BRIDGE_DB` | resolved data path | Active DB/data path used for uninstall scope |
+| `XDG_CONFIG_HOME` | OS default | Active config base used when no explicit config override is set |
+| `XDG_DATA_HOME` | OS default | Active data base used when no explicit DB override is set |
 
 ## MCP Tools
 

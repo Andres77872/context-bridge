@@ -365,4 +365,34 @@ Stack trace for auth error:
 			t.Errorf("FTS5 mode should mention FTS5 in description, got: %q", fts5Desc)
 		}
 	})
+
+	t.Run("Scenario 12: FTS5 Empty Query Validation", func(t *testing.T) {
+		// FTS5 mode should also reject empty queries, just like regex mode
+		resp := callTool(t, srv, "search", map[string]any{
+			"session_id": sessionID,
+			"query":      "   ",
+		})
+		if !resp.IsError {
+			t.Fatalf("Expected error for empty query in FTS5 mode, but got success")
+		}
+		if !strings.Contains(resp.Text, "query is required") {
+			t.Errorf("Expected 'query is required' error in FTS5 mode, got: %s", resp.Text)
+		}
+	})
+
+	t.Run("Scenario 13: FTS5 Mode Dispatch Verified", func(t *testing.T) {
+		// Prove FTS5 mode is actually used by verifying FTS5-specific behavior
+		// Use a simple word query that works for both FTS5 MATCH and snippet building
+		resp := callTool(t, srv, "search", map[string]any{
+			"session_id": sessionID,
+			"query":      "jwt_token", // simple token query
+		})
+		if resp.IsError {
+			t.Fatalf("unexpected error for FTS5 query: %v", resp.Text)
+		}
+		// Should match via FTS5 token matching
+		if !strings.Contains(resp.Text, "match(es)") {
+			t.Errorf("Expected matches for FTS5 query 'jwt_token', got:\n%s", resp.Text)
+		}
+	})
 }

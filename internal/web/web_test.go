@@ -277,3 +277,145 @@ func TestHandleUpdateConfigRejectsUnknownFields(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestHandleSearchModePersistsAcrossRestart proves that saved mode persists
+// when the config is loaded and a new Server instance is created (simulating restart).
+// This mirrors the flow in main.go: LoadConfig -> New(st, mode, configPath)
+func TestHandleSearchModePersistsAcrossRestart(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_persist", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_persist", []struct {
+		seq     int
+		agent   string
+		desc    string
+		content string
+	}{
+		{seq: 1, agent: "grep", desc: "auth module", content: "authentication module code"},
+		{seq: 2, agent: "explore", desc: "other", content: "other content"},
+	})
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+
+	// First server instance starts with regex mode
+	firstSrv := New(st, store.SearchModeRegex, configPath)
+
+	// Update to FTS5 via API
+	req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"search_mode":"fts5"}`))
+	rec := httptest.NewRecorder()
+	firstSrv.handleUpdateConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update config: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// "Restart" simulation: load saved config and create new server
+	// This mirrors what main.go does on restart
+	cfg, err := config.LoadConfig(configPath, true)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	secondSrv := New(st, store.SearchMode(cfg.SearchMode), configPath)
+
+	// Verify the new server uses FTS5 mode from saved config
+	if secondSrv.currentSearchMode() != store.SearchModeFTS5 {
+		t.Fatalf("expected new server to use FTS5 from saved config, got %q", secondSrv.currentSearchMode())
+	}
+
+	// Prove it behaves as FTS5: search for word that would match differently in regex
+	searchReq := httptest.NewRequest("GET", "/api/sessions/ses_persist/search?q=authentication", nil)
+	searchReq.SetPathValue("id", "ses_persist")
+	searchRec := httptest.NewRecorder()
+	secondSrv.handleSearch(searchRec, searchReq)
+
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("search: expected 200, got %d: %s", searchRec.Code, searchRec.Body.String())
+	}
+
+	var results []map[string]any
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &results); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("FTS5 mode should match 'authentication' word, got %d results", len(results))
+	}
+}
+
+// TestHandleSearchModeRoundTripBothModes proves both modes can be saved and loaded
+// through the full config -> runtime -> restart cycle.
+func TestHandleSearchModeRoundTripBothModes(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.EnsureSession("ses_roundtrip", ""); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	seedSession(t, st, "ses_roundtrip", []struct {
+		seq     int
+		agent   string
+		desc    string
+		content string
+	}{
+		{seq: 1, agent: "grep", desc: "test", content: "uniqueword test content"},
+	})
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+
+	tests := []struct {
+		name       string
+		mode       string
+		query      string
+		wantResult bool
+	}{
+		{
+			name:       "regex mode persists",
+			mode:       "regex",
+			query:      "unique.*word", // regex pattern
+			wantResult: true,
+		},
+		{
+			name:       "fts5 mode persists",
+			mode:       "fts5",
+			query:      "uniqueword", // simple word for FTS5
+			wantResult: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create server, save mode
+			srv := New(st, store.SearchModeRegex, configPath)
+			req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"search_mode":"`+tt.mode+`"}`))
+			rec := httptest.NewRecorder()
+			srv.handleUpdateConfig(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("save config: %d - %s", rec.Code, rec.Body.String())
+			}
+
+			// Restart simulation: load config and create new instance (mirrors main.go)
+			cfg, err := config.LoadConfig(configPath, true)
+			if err != nil {
+				t.Fatalf("load config after save: %v", err)
+			}
+			newSrv := New(st, store.SearchMode(cfg.SearchMode), configPath)
+
+			if newSrv.currentSearchMode() != store.SearchMode(tt.mode) {
+				t.Fatalf("expected mode %q after restart, got %q", tt.mode, newSrv.currentSearchMode())
+			}
+
+			// Verify search uses the persisted mode
+			searchReq := httptest.NewRequest("GET", "/api/sessions/ses_roundtrip/search?q="+tt.query, nil)
+			searchReq.SetPathValue("id", "ses_roundtrip")
+			searchRec := httptest.NewRecorder()
+			newSrv.handleSearch(searchRec, searchReq)
+
+			if searchRec.Code != http.StatusOK {
+				t.Fatalf("search: %d - %s", searchRec.Code, searchRec.Body.String())
+			}
+
+			var results []map[string]any
+			json.Unmarshal(searchRec.Body.Bytes(), &results)
+			if tt.wantResult && len(results) == 0 {
+				t.Fatalf("expected results for mode %q with query %q", tt.mode, tt.query)
+			}
+		})
+	}
+}

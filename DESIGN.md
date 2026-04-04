@@ -81,8 +81,6 @@ context-bridge/
 │   │   ├── model.go             # single tea.Model with Screen enum
 │   │   ├── update.go            # Update() router by Screen
 │   │   └── view.go              # View() router by Screen
-│   └── migrate/
-│       └── migrate.go           # import from old manifest/files format
 ├── plugin/
 │   └── opencode/
 │       └── context-bridge.ts    # thin OpenCode adapter (forward hooks → MCP)
@@ -99,7 +97,6 @@ context-bridge/
 | `internal/store` | SQLite schema, all domain queries, FTS, seq counters, soft-delete policy | MCP protocol, HTTP, UI, hook business logic |
 | `internal/mcp` | Tool registration, arg parsing, MCP protocol, hint rendering | DB schema, session graph logic |
 | `internal/tui` | Terminal UI, screen states, key routing | Any DB write; reads store only |
-| `internal/migrate` | Read old manifest format, import to new store | Ongoing operations |
 | `cmd/context-bridge` | CLI flag parsing, mode dispatch, store init | Any business logic |
 | `plugin/opencode/context-bridge.ts` | OpenCode hook binding, MCP transport, system prompt injection | Session graph, persistence, search |
 
@@ -159,8 +156,6 @@ func (s *Store) Search(rootSessionID string, query string, contextLines int) ([]
 // Hint
 func (s *Store) RenderHint(rootSessionID string) (string, error)
 
-// Migration
-func (s *Store) ImportManifestDir(sessionsDir string) (imported int, err error)
 ```
 
 ### Seq counter strategy
@@ -308,7 +303,6 @@ func Serve(s *store.Store) error {
 ```
 context-bridge mcp          # Start MCP stdio server (primary mode; used by OpenCode)
 context-bridge tui          # Start TUI browser
-context-bridge migrate      # One-time import from old manifest/files format
 context-bridge version      # Print version
 ```
 
@@ -521,52 +515,7 @@ Use a simple integer version in `schema_version`. On `Open()`, read current vers
 
 ---
 
-## 10. Migration Strategy
-
-### Current format (to import from)
-```
-~/.local/share/opencode/tool-output/sessions/{sessionID}/manifest.json
-~/.local/share/opencode/tool-output/sessions/{sessionID}/{seq}_{agent}_{callID}.md
-```
-
-### Manifest schema (source)
-```json
-{
-  "version": 1,
-  "session": "ses_xxx",
-  "outputs": [
-    {
-      "seq": 1, "agent": "grep", "description": "...",
-      "preview": "...", "file": "001_grep_....md",
-      "callID": "...", "childSessionID": "...",
-      "timestamp": "ISO", "bytes": 418
-    }
-  ]
-}
-```
-
-### Migration steps (`internal/migrate/migrate.go`)
-
-```go
-func ImportManifestDir(s *store.Store, sessionsDir string) (int, error) {
-    // 1. Walk sessionsDir for */manifest.json
-    // 2. For each manifest:
-    //    a. EnsureSession(session.ID, "") — root session, no parent known
-    //    b. For each output entry:
-    //       - read content from output.file
-    //       - call s.AddCapture(...) with existing seq preserved if possible
-    //       - skip if callID already exists (idempotent re-runs)
-    // 3. Return count of imported captures
-}
-```
-
-**Legacy flat files** (`ctx_bridge_*.md`): skip. They are the old pre-manifest format and lack the structured metadata needed for proper session attribution.
-
-**Re-run safety**: check for duplicate `call_id` before insert — skip already-imported records. This makes `context-bridge migrate` idempotent.
-
----
-
-## 11. opencode.json Configuration (Manual)
+## 10. opencode.json Configuration (Manual)
 
 The user must manually add this to `~/.config/opencode/opencode.json`:
 
@@ -591,7 +540,7 @@ The internal tools (`capture_output`, `ensure_session`, `mark_session_deleted`, 
 
 ---
 
-## 12. External Dependencies
+## 11. External Dependencies
 
 | Package | Version | Purpose |
 |---|---|---|
@@ -605,7 +554,7 @@ The internal tools (`capture_output`, `ensure_session`, `mark_session_deleted`, 
 
 ---
 
-## 13. Phased Implementation Plan
+## 12. Phased Implementation Plan
 
 ### Phase 1 — Store + MCP (core loop works)
 **Goal**: The Go binary can receive captures from the plugin and return them to agents.
@@ -634,20 +583,7 @@ Acceptance: Existing sessions continue to produce and recover subagent outputs w
 
 ---
 
-### Phase 3 — Migration
-**Goal**: Import existing captured data to new store.
-
-Tasks:
-1. Implement `internal/migrate/migrate.go`
-2. Wire `context-bridge migrate` CLI subcommand
-3. Test idempotency with existing session directories
-4. Verify imported data shows in TUI and is searchable
-
-Acceptance: All existing captures accessible in new system without loss.
-
----
-
-### Phase 4 — TUI
+### Phase 3 — TUI
 **Goal**: Browseable terminal interface.
 
 Tasks:
@@ -660,7 +596,7 @@ Acceptance: `context-bridge tui` shows sessions, allows drilling into captures, 
 
 ---
 
-### Phase 5 — Polish & Release
+### Phase 4 — Polish & Release
 **Goal**: Production-ready binary.
 
 Tasks:
@@ -671,7 +607,7 @@ Tasks:
 
 ---
 
-## 14. Risks & Tradeoffs
+## 13. Risks & Tradeoffs
 
 ### R1: MCP subprocess management
 **Risk**: OpenCode's MCP client must keep `context-bridge mcp` alive. If it restarts, in-flight captures could be lost.  
@@ -709,7 +645,7 @@ Tasks:
 
 ---
 
-## 15. Hint Contract Change (Breaking)
+## 14. Hint Contract Change (Breaking)
 
 The current hint format shows **file paths**, which agents cannot use with `read` (which takes a seq number). This is a known contract bug.
 
@@ -745,8 +681,6 @@ Do NOT redo research that already exists.
 | Search | FTS5 primary, LIKE fallback |
 | TUI | Single `tea.Model`, 5 screens, read-only |
 | Auto-config | None — fully manual setup |
-| Migration | `context-bridge migrate` reads old manifest format, idempotent |
-| Legacy flat files | Skipped (insufficient metadata) |
 | Tool names | `list`, `read`, `search` |
 | Hint format | Changed: `#seq` numbers instead of file paths (breaking, intentional) |
 | Install | Build binary → copy to PATH → edit `opencode.json` → copy plugin |

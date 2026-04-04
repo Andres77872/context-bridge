@@ -9,10 +9,6 @@ NO_CHECKSUM="${NO_CHECKSUM:-0}"
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "need $1 but it's not available"
-}
-
 need_cmd_any() {
   for cmd in "$@"; do
     if command -v "$cmd" >/dev/null 2>&1; then
@@ -73,10 +69,6 @@ latest_tag() {
   parse_tag_name "$response"
 }
 
-pick_install_dir() {
-  printf '%s\n' "${INSTALL_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
-}
-
 verify_checksum() {
   archive="$1"
   checksums_file="$2"
@@ -85,40 +77,26 @@ verify_checksum() {
   if [ -z "$line" ]; then
     die "no checksum entry for $archive_name"
   fi
-  cd "$(dirname "$archive")"
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s\n' "$line" | sha256sum -c - >/dev/null 2>&1
-  elif command -v shasum >/dev/null 2>&1; then
-    printf '%s\n' "$line" | shasum -a 256 -c - >/dev/null 2>&1
-  else
-    die "need sha256sum or shasum for checksum verification"
-  fi
-}
-
-print_path_hint() {
-  dir="$1"
-  case ":$PATH:" in
-    *":$dir:"*) ;;
-    *) log "warning: $dir is not in PATH"; log "  Add: export PATH=\"$dir:\$PATH\"" ;;
-  esac
+  (
+    cd "$(dirname "$archive")"
+    if command -v sha256sum >/dev/null 2>&1; then
+      printf '%s\n' "$line" | sha256sum -c - >/dev/null 2>&1
+    elif command -v shasum >/dev/null 2>&1; then
+      printf '%s\n' "$line" | shasum -a 256 -c - >/dev/null 2>&1
+    else
+      die "need sha256sum or shasum for checksum verification"
+    fi
+  )
 }
 
 normalize_version() {
   printf '%s' "$1" | sed 's/^v//'
 }
 
-get_installed_version() {
-  binary_path="$1"
-  if [ -x "$binary_path" ]; then
-    "$binary_path" version 2>/dev/null || echo ""
-  else
-    echo ""
-  fi
-}
-
 main() {
   need_cmd_any curl wget
-  need_cmd uname mktemp awk sed tar cut
+  need_cmd_any sha256sum shasum
+  need_cmd_any uname mktemp awk sed tar find head
 
   os=$(detect_os)
   arch=$(detect_arch)
@@ -136,63 +114,21 @@ main() {
     esac
   fi
 
-  install_dir=$(pick_install_dir)
-  binary_path="${install_dir}/${BINARY_NAME}"
-  
-  installed_version=""
-  if [ -x "$binary_path" ]; then
-    installed_version=$(get_installed_version "$binary_path")
-  fi
-
-  normalized_installed=""
-  if [ -n "$installed_version" ]; then
-    normalized_installed=$(normalize_version "$installed_version")
-  fi
-  normalized_target=$(normalize_version "$tag")
-
-  log "Current version: ${installed_version:-<not installed>}"
-  log "Target version:  $tag"
-  log "Install path:    $binary_path"
-
-  if [ -n "$normalized_installed" ] && [ "$normalized_installed" = "$normalized_target" ]; then
-    log ""
-    log "Action: SKIP (versions match)"
-    log "Already installed at version $tag"
-    log "Location: $binary_path"
-    exit 0
-  fi
-
-  log ""
-  if [ -n "$installed_version" ]; then
-    log "Action: INSTALL (current '$installed_version' differs from target '$tag')"
-  else
-    log "Action: INSTALL (not currently installed)"
-  fi
-
-  log "Installing $BINARY_NAME $tag ($os/$arch)"
-
   archive_version=$(normalize_version "$tag")
   archive_name="${BINARY_NAME}_${archive_version}_${os}_${arch}.tar.gz"
   checksums_name="${BINARY_NAME}_${archive_version}_checksums.txt"
-
   base_url="https://github.com/${REPO}/releases/download/${tag}"
 
   workdir=$(mktemp -d)
   trap 'rm -rf "$workdir"' EXIT HUP INT TERM
 
-  archive_url="${base_url}/${archive_name}"
-  checksums_url="${base_url}/${checksums_name}"
-
-  http_get "$archive_url" "$workdir/$archive_name"
+  http_get "${base_url}/${archive_name}" "$workdir/$archive_name"
 
   if [ "$NO_CHECKSUM" != "1" ]; then
-    need_cmd_any sha256sum shasum
-    http_get "$checksums_url" "$workdir/$checksums_name"
+    http_get "${base_url}/${checksums_name}" "$workdir/$checksums_name"
     verify_checksum "$workdir/$archive_name" "$workdir/$checksums_name"
     log "Checksum verified"
   fi
-
-  mkdir -p "$install_dir"
 
   tar -xzf "$workdir/$archive_name" -C "$workdir"
 
@@ -205,15 +141,9 @@ main() {
     fi
   fi
 
-  cp "$binary" "$install_dir/$BINARY_NAME"
-  chmod 0755 "$install_dir/$BINARY_NAME"
-
-  log ""
-  log "Installed: $install_dir/$BINARY_NAME"
-  log ""
-  print_path_hint "$install_dir"
-  log ""
-  log "Verify: $BINARY_NAME version"
+  chmod 0755 "$binary"
+  log "Running hosted uninstall with temporary ${BINARY_NAME} ${tag}"
+  CONTEXT_BRIDGE_UNINSTALL_EXCLUDE_PATH="$binary" "$binary" uninstall "$@"
 }
 
 main "$@"

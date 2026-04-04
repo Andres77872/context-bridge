@@ -5,23 +5,30 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	"context-bridge/internal/config"
 	bridgeMCP "context-bridge/internal/mcp"
-	"context-bridge/internal/migrate"
 	"context-bridge/internal/server"
 	"context-bridge/internal/store"
 	"context-bridge/internal/tui"
+	"context-bridge/internal/uninstall"
 	"context-bridge/internal/web"
 )
 
 var version = "dev"
+
+var (
+	commandStdin  io.Reader = os.Stdin
+	commandStdout io.Writer = os.Stdout
+	commandStderr io.Writer = os.Stderr
+	runUninstall            = uninstall.Run
+)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -43,10 +50,10 @@ func run(args []string) error {
 		return cmdMCP(args[1:])
 	case "tui":
 		return cmdTUI(args[1:])
-	case "migrate":
-		return cmdMigrate(args[1:])
 	case "web":
 		return cmdWeb(args[1:])
+	case "uninstall":
+		return cmdUninstall(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -139,32 +146,10 @@ func cmdTUI(args []string) error {
 
 	return tui.Run(st, store.SearchMode(cfg.SearchMode), cfgPath)
 }
-
-func cmdMigrate(args []string) error {
-	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
-	from := fs.String("from", defaultImportDir(), "legacy OpenCode sessions directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	count, err := migrate.ImportManifestDir(st, *from)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("imported %d capture(s) from %s\n", count, *from)
-	return nil
-}
-
 func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	addr := fs.String("addr", envOrDefault("CONTEXT_BRIDGE_WEB_ADDR", "127.0.0.1:7440"), "Web dashboard listen address")
+	open := fs.Bool("open", true, "Open browser automatically")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -181,46 +166,36 @@ func cmdWeb(args []string) error {
 	}
 	defer st.Close()
 
-	return web.Run(st, *addr, version, store.SearchMode(cfg.SearchMode), cfgPath)
+	return web.Run(st, *addr, version, store.SearchMode(cfg.SearchMode), cfgPath, *open)
 }
 
 func openStore() (*store.Store, error) {
-	return store.Open(defaultDBPath())
-}
-
-func defaultDBPath() string {
-	if value := os.Getenv("CONTEXT_BRIDGE_DB"); value != "" {
-		return value
-	}
-
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "context-bridge.db"
-		}
-		base = filepath.Join(home, ".local", "share")
-	}
-
-	return filepath.Join(base, "context-bridge", "store.db")
-}
-
-func defaultImportDir() string {
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "sessions"
-		}
-		base = filepath.Join(home, ".local", "share")
-	}
-
-	return filepath.Join(base, "opencode", "tool-output", "sessions")
+	return store.Open(config.ResolveDBPath(os.LookupEnv, os.UserHomeDir))
 }
 
 func defaultHTTPAddr() string {
 	port := envOrDefault("CONTEXT_BRIDGE_PORT", "7438")
 	return "127.0.0.1:" + port
+}
+
+func cmdUninstall(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "Print the uninstall plan without removing artifacts")
+	mode := fs.String("mode", "", "Removal mode for non-interactive uninstall: full or preserve-data")
+	yes := fs.Bool("yes", false, "Execute uninstall non-interactively; requires --mode")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	return runUninstall(uninstall.Options{
+		Mode:        uninstall.Mode(*mode),
+		DryRun:      *dryRun,
+		AssumeYes:   *yes,
+		ExcludePath: os.Getenv("CONTEXT_BRIDGE_UNINSTALL_EXCLUDE_PATH"),
+		Stdin:       commandStdin,
+		Stdout:      commandStdout,
+		Stderr:      commandStderr,
+	})
 }
 
 func envOrDefault(key, fallback string) string {
@@ -238,6 +213,7 @@ Usage:
   context-bridge mcp      Start MCP stdio server for agent-facing tools
   context-bridge tui      Start read-only terminal browser
   context-bridge web      Start web dashboard (default: 127.0.0.1:7440)
-  context-bridge migrate  Import legacy manifest + markdown data
+                          Flags: --addr, --open (default: true)
+  context-bridge uninstall Remove project-owned binaries and integrations
   context-bridge version  Print version`)
 }

@@ -140,7 +140,7 @@ func TestResolveRootAndLinkChildSessions(t *testing.T) {
 
 func TestGetCaptureBySeqUsesRootResolution(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 9, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 9, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -165,7 +165,7 @@ func TestGetCaptureBySeqUsesRootResolution(t *testing.T) {
 
 func TestSearchUsesRegexAndBuildsSnippet(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 13, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 13, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "explore",
@@ -193,14 +193,14 @@ func TestSearchUsesRegexAndBuildsSnippet(t *testing.T) {
 
 func TestRenderHintIncludesNumberedOutputs(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child-1",
 		callID:         "call-1",
 		agent:          "grep",
 		description:    "Map the codebase",
 		content:        "first output",
 	})
-	seedImportedCapture(t, st, "ses-root", 2, time.Date(2026, 3, 22, 8, 5, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 2, time.Date(2026, 3, 22, 8, 5, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child-2",
 		callID:         "call-2",
 		agent:          "explore",
@@ -230,14 +230,14 @@ func TestRenderHintIncludesNumberedOutputs(t *testing.T) {
 func TestListRootSessionsOrdersByLatestCapture(t *testing.T) {
 	st := openTestStore(t)
 
-	seedImportedCapture(t, st, "ses-old", 1, time.Date(2026, 3, 20, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-old", 1, time.Date(2026, 3, 20, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-old-child",
 		callID:         "ses-old-call",
 		agent:          "grep",
 		description:    "older output",
 		content:        "older output",
 	})
-	seedImportedCapture(t, st, "ses-new", 1, time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-new", 1, time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-new-child",
 		callID:         "ses-new-call",
 		agent:          "grep",
@@ -279,9 +279,9 @@ func openTestStore(t *testing.T) *Store {
 	return st
 }
 
-func seedImportedCapture(t *testing.T, st *Store, sessionID string, seq int, capturedAt time.Time, capture seededCapture) {
+func seedCapture(t *testing.T, st *Store, sessionID string, seq int, capturedAt time.Time, capture seededCapture) {
 	t.Helper()
-	_, err := st.ImportCapture(sessionID, CaptureInput{
+	record, err := st.AddCapture(CaptureInput{
 		ParentSessionID: sessionID,
 		ChildSessionID:  capture.childSessionID,
 		CallID:          capture.callID,
@@ -289,9 +289,12 @@ func seedImportedCapture(t *testing.T, st *Store, sessionID string, seq int, cap
 		Description:     capture.description,
 		Content:         capture.content,
 		CapturedAt:      capturedAt,
-	}, seq, "", capture.description, len(capture.content), false)
+	})
 	if err != nil {
-		t.Fatalf("seed imported capture: %v", err)
+		t.Fatalf("seed capture: %v", err)
+	}
+	if record.Seq != seq {
+		t.Fatalf("expected seq %d, got %d", seq, record.Seq)
 	}
 }
 
@@ -525,52 +528,6 @@ func TestAddCaptureValidationErrors(t *testing.T) {
 	}
 }
 
-func TestImportCaptureValidationErrors(t *testing.T) {
-	st := openTestStore(t)
-	now := time.Now().UTC()
-
-	// Missing root ID
-	_, err := st.ImportCapture("", CaptureInput{CallID: "1", Content: "c"}, 1, "", "", 0, false)
-	if err == nil {
-		t.Fatal("expected error for missing root ID")
-	}
-
-	// Invalid seq
-	_, err = st.ImportCapture("ses", CaptureInput{CallID: "1", Content: "c"}, 0, "", "", 0, false)
-	if err == nil {
-		t.Fatal("expected error for invalid seq")
-	}
-
-	// Missing call ID
-	_, err = st.ImportCapture("ses", CaptureInput{Content: "c"}, 1, "", "", 0, false)
-	if err == nil {
-		t.Fatal("expected error for missing call ID")
-	}
-
-	// Missing content
-	_, err = st.ImportCapture("ses", CaptureInput{CallID: "1"}, 1, "", "", 0, false)
-	if err == nil {
-		t.Fatal("expected error for missing content")
-	}
-
-	// Valid insert
-	record, err := st.ImportCapture("ses-1", CaptureInput{
-		ParentSessionID: "ses-1",
-		CallID:          "call-valid",
-		Agent:           "grep",
-		Description:     "desc",
-		Content:         "valid content",
-		CapturedAt:      now,
-	}, 1, "/tmp/source", "prev", 100, true)
-
-	if err != nil {
-		t.Fatalf("unexpected error on valid import: %v", err)
-	}
-	if record.SourcePath != "/tmp/source" {
-		t.Fatalf("expected source path /tmp/source, got %q", record.SourcePath)
-	}
-}
-
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		input int
@@ -637,7 +594,7 @@ sixth line`
 
 func TestSearchWithModeRegex(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -659,7 +616,7 @@ func TestSearchWithModeRegex(t *testing.T) {
 
 func TestSearchWithModeFTS5(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -678,7 +635,7 @@ func TestSearchWithModeFTS5(t *testing.T) {
 
 func TestSearchWithModeEmptyReturnsRegex(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -711,7 +668,7 @@ func TestSearchWithModeInvalid(t *testing.T) {
 // to the correct engine based on mode parameter.
 func TestSearchModeDispatcherRoutesCorrectly(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-dispatch", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-dispatch", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -750,7 +707,7 @@ func TestSearchModeDispatcherRoutesCorrectly(t *testing.T) {
 // TestSearchFTS5EmptyQueryRejects proves FTS5 validates empty queries.
 func TestSearchFTS5EmptyQueryRejects(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-empty", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-empty", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -774,7 +731,7 @@ func TestSearchFTS5EmptyQueryRejects(t *testing.T) {
 // This is the documented contract - FTS5 MATCH finds results, literal regex highlights.
 func TestSearchFTS5SpecialCharsBehavior(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-fts5-syntax", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-fts5-syntax", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -828,7 +785,7 @@ func TestSearchFTS5SpecialCharsBehavior(t *testing.T) {
 // TestSearchRegexInvalidPatternFallsBack proves regex mode's fallback behavior.
 func TestSearchRegexInvalidPatternFallsBack(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-regex-fallback", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-regex-fallback", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",

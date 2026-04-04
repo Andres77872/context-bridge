@@ -13,7 +13,7 @@ func TestContextBridgeSearchE2E(t *testing.T) {
 	sessionID := "prefix-00000000-0000-0000-0000-000000000000"
 
 	// Output 1: Some bash commands and basic file read with extensive logs
-	seedImportedCapture(t, st, sessionID, 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, sessionID, 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: sessionID + "-child1",
 		callID:         "call-1",
 		agent:          "executor",
@@ -48,7 +48,7 @@ Setup complete.`,
 	})
 
 	// Output 2: A python script with some code and a specific error, with more context
-	seedImportedCapture(t, st, sessionID, 2, time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, sessionID, 2, time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC), seededCapture{
 		childSessionID: sessionID + "-child2",
 		callID:         "call-2",
 		agent:          "grep",
@@ -95,7 +95,7 @@ def validate_token(payload):
 	})
 
 	// Output 3: System logs containing random patterns and timestamps, much longer
-	seedImportedCapture(t, st, sessionID, 3, time.Date(2026, 3, 22, 10, 10, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, sessionID, 3, time.Date(2026, 3, 22, 10, 10, 0, 0, time.UTC), seededCapture{
 		childSessionID: sessionID + "-child3",
 		callID:         "call-3",
 		agent:          "explore",
@@ -249,7 +249,7 @@ func TestContextBridgeSearchE2EFTS5(t *testing.T) {
 	st := openTestStore(t)
 	sessionID := "fts5-test-session"
 
-	seedImportedCapture(t, st, sessionID, 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, sessionID, 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: sessionID + "-child",
 		callID:         "fts5-call-1",
 		agent:          "grep",
@@ -271,7 +271,7 @@ Found authentication patterns in:
 `,
 	})
 
-	seedImportedCapture(t, st, sessionID, 2, time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, sessionID, 2, time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC), seededCapture{
 		childSessionID: sessionID + "-child2",
 		callID:         "fts5-call-2",
 		agent:          "explore",

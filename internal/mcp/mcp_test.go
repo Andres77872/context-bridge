@@ -15,14 +15,14 @@ import (
 
 func TestContextBridgeToolListsOutputsAndSupportsAgentFilter(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child-1",
 		callID:         "call-1",
 		agent:          "grep",
 		description:    "Map codebase",
 		content:        "grep body",
 	})
-	seedImportedCapture(t, st, "ses-root", 2, time.Date(2026, 3, 22, 8, 5, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 2, time.Date(2026, 3, 22, 8, 5, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child-2",
 		callID:         "call-2",
 		agent:          "explore",
@@ -56,7 +56,7 @@ func TestContextBridgeToolListsOutputsAndSupportsAgentFilter(t *testing.T) {
 
 func TestContextBridgeReadToolReturnsFullOutput(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 2, time.Date(2026, 3, 22, 9, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 9, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-2",
 		agent:          "executor",
@@ -67,14 +67,14 @@ func TestContextBridgeReadToolReturnsFullOutput(t *testing.T) {
 	srv := New(st, "test", store.SearchModeRegex)
 	resp := callTool(t, srv, "read", map[string]any{
 		"session_id": "ses-child",
-		"output":     2,
+		"output":     1,
 	})
 
 	if resp.IsError {
 		t.Fatalf("expected success, got error text %q", resp.Text)
 	}
 	for _, want := range []string{
-		"## Output #2: [executor] Implement tests",
+		"## Output #1: [executor] Implement tests",
 		"**Time**: 2026-03-22T09:00:00Z",
 		"full output body",
 	} {
@@ -86,7 +86,7 @@ func TestContextBridgeReadToolReturnsFullOutput(t *testing.T) {
 
 func TestContextBridgeSearchToolReturnsMatches(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "explore",
@@ -119,7 +119,7 @@ func TestContextBridgeSearchToolReturnsMatches(t *testing.T) {
 
 func TestContextBridgeSearchFTS5Mode(t *testing.T) {
 	st := openTestStore(t)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "explore",
@@ -373,9 +373,9 @@ func openTestStore(t *testing.T) *store.Store {
 	return st
 }
 
-func seedImportedCapture(t *testing.T, st *store.Store, sessionID string, seq int, capturedAt time.Time, capture seededCapture) {
+func seedCapture(t *testing.T, st *store.Store, sessionID string, seq int, capturedAt time.Time, capture seededCapture) {
 	t.Helper()
-	_, err := st.ImportCapture(sessionID, store.CaptureInput{
+	record, err := st.AddCapture(store.CaptureInput{
 		ParentSessionID: sessionID,
 		ChildSessionID:  capture.childSessionID,
 		CallID:          capture.callID,
@@ -383,9 +383,12 @@ func seedImportedCapture(t *testing.T, st *store.Store, sessionID string, seq in
 		Description:     capture.description,
 		Content:         capture.content,
 		CapturedAt:      capturedAt,
-	}, seq, "", capture.description, len(capture.content), false)
+	})
 	if err != nil {
-		t.Fatalf("seed imported capture: %v", err)
+		t.Fatalf("seed capture: %v", err)
+	}
+	if record.Seq != seq {
+		t.Fatalf("expected seq %d, got %d", seq, record.Seq)
 	}
 }
 

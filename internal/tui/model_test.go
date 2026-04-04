@@ -514,7 +514,7 @@ func openTestStore(t *testing.T) *store.Store {
 func seedSession(t *testing.T, st *store.Store, sessionID string, captures []seedCapture) {
 	t.Helper()
 	for _, capture := range captures {
-		_, err := st.ImportCapture(sessionID, store.CaptureInput{
+		record, err := st.AddCapture(store.CaptureInput{
 			ParentSessionID: sessionID,
 			ChildSessionID:  fmt.Sprintf("child-%d", capture.seq),
 			CallID:          fmt.Sprintf("call-%d", capture.seq),
@@ -522,9 +522,12 @@ func seedSession(t *testing.T, st *store.Store, sessionID string, captures []see
 			Description:     capture.desc,
 			Content:         capture.content,
 			CapturedAt:      time.Now().UTC().Add(time.Duration(capture.seq) * time.Minute),
-		}, capture.seq, "", capture.desc, len(capture.content), false)
+		})
 		if err != nil {
 			t.Fatalf("seed capture %d: %v", capture.seq, err)
+		}
+		if record.Seq != capture.seq {
+			t.Fatalf("expected seq %d, got %d", capture.seq, record.Seq)
 		}
 	}
 }

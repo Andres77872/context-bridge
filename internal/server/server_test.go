@@ -135,7 +135,7 @@ func TestCaptureEndpointIngestsAndDedupes(t *testing.T) {
 func TestHintEndpointReturnsRenderedHint(t *testing.T) {
 	st := openTestStore(t)
 	srv := New(st)
-	seedImportedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",
 		agent:          "grep",
@@ -181,9 +181,9 @@ func openTestStore(t *testing.T) *store.Store {
 	return st
 }
 
-func seedImportedCapture(t *testing.T, st *store.Store, sessionID string, seq int, capturedAt time.Time, capture seededCapture) {
+func seedCapture(t *testing.T, st *store.Store, sessionID string, seq int, capturedAt time.Time, capture seededCapture) {
 	t.Helper()
-	_, err := st.ImportCapture(sessionID, store.CaptureInput{
+	record, err := st.AddCapture(store.CaptureInput{
 		ParentSessionID: sessionID,
 		ChildSessionID:  capture.childSessionID,
 		CallID:          capture.callID,
@@ -191,9 +191,12 @@ func seedImportedCapture(t *testing.T, st *store.Store, sessionID string, seq in
 		Description:     capture.description,
 		Content:         capture.content,
 		CapturedAt:      capturedAt,
-	}, seq, "", capture.description, len(capture.content), false)
+	})
 	if err != nil {
-		t.Fatalf("seed imported capture: %v", err)
+		t.Fatalf("seed capture: %v", err)
+	}
+	if record.Seq != seq {
+		t.Fatalf("expected seq %d, got %d", seq, record.Seq)
 	}
 }
 

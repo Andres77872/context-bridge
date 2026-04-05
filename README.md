@@ -12,22 +12,115 @@ When working with OpenCode, subagents (grep, explore, executor, etc.) produce ou
 
 ## How it works
 
-```mermaid
-flowchart TD
-    O[Parent or child agent session] -->|Task completes| P[context-bridge.ts plugin]
-    P -->|POST /capture| S[Context Bridge HTTP server]
-    S --> DB[(SQLite store.db)]
-    DB --> FTS[(FTS5 index)]
+Context Bridge has two main flows: **capture** (persisting subagent outputs) and **retrieval** (reading them back).
 
-    P -->|GET /hint?session_id=...| S
-    S -->|render prior outputs for root session| P
-    P -->|append hint| C[Child system prompt]
+### Capture Flow
+
+When a subagent completes a task, the TypeScript plugin forwards the output to the Go backend:
+
+```mermaid
+sequenceDiagram
+    participant OC as OpenCode
+    participant P as Plugin
+    participant SRV as HTTP Server
+    participant S as Store
+    participant DB as SQLite + FTS5
     
-    C -->|Agent reads prior outputs| MCP[Context Bridge MCP]
-    MCP <--> DB
+    OC->>P: Task subagent completes
+    P->>P: Validate: Task tool, agent, content≥100 chars
+    P->>SRV: POST /capture
+    SRV->>S: AddCapture(input)
+    S->>S: ResolveRoot(parentID) → root session
+    S->>DB: INSERT captures (dedupe by call_id)
+    DB-->>DB: FTS5 trigger syncs index
+    SRV-->>P: {ok, id, seq}
 ```
 
-The plugin is a thin HTTP bridge (114 lines, no business logic). The Go binary owns all data persistence and query logic, resolving all captured data to the **root session** so child tasks can seamlessly access prior research.
+The plugin is a thin HTTP bridge (114 lines, no business logic). The Go binary owns all persistence, search, and query logic.
+
+### Retrieval Flow
+
+Agents and humans access captured outputs through three surfaces, all backed by the same store:
+
+```mermaid
+flowchart LR
+    subgraph Surfaces
+        MCP[MCP Tools<br/>list/read/search]
+        TUI[TUI Browser]
+        WEB[Web Dashboard]
+    end
+    
+    subgraph Storage
+        S[(Store)]
+        DB[(SQLite)]
+        FTS[(FTS5)]
+    end
+    
+    MCP --> S
+    TUI --> S
+    WEB --> S
+    S --> DB
+    S --> FTS
+    
+    MCP -->|markdown| A[Agent]
+    TUI -->|terminal| H[Human]
+    WEB -->|browser| H
+```
+
+### Root Session Resolution
+
+All captures are stored against the **root session** (the top-level conversation). Child sessions inherit access via root resolution:
+
+```mermaid
+flowchart TD
+    subgraph Sessions
+        R[Root Session]
+        C1[Child A]
+        C2[Child B]
+        CC[Grandchild]
+    end
+    
+    subgraph Captures
+        CAP1[Capture #1]
+        CAP2[Capture #2]
+        CAP3[Capture #3]
+    end
+    
+    C1 -->|ResolveRoot| R
+    C2 -->|ResolveRoot| R
+    CC -->|ResolveRoot| R
+    
+    CAP1 --> R
+    CAP2 --> R
+    CAP3 --> R
+    
+    style R fill:#e1f5fe
+```
+
+When a child session calls `list`, `read`, or `search`, the store resolves to the root and returns all captures from the session tree.
+
+### Hint Injection
+
+When a new child session starts, the plugin fetches a hint of prior outputs and appends it to the system prompt:
+
+```mermaid
+sequenceDiagram
+    participant OC as OpenCode
+    participant P as Plugin
+    participant SRV as HTTP Server
+    participant S as Store
+    
+    OC->>P: New child session starts
+    P->>SRV: GET /hint?session_id=childID
+    SRV->>S: RenderHint(childID)
+    S->>S: ResolveRoot(childID)
+    S->>S: ListCaptures(rootID)
+    S-->>SRV: Markdown hint
+    SRV-->>P: Hint text
+    P->>P: Append to system prompt
+```
+
+This ensures child agents see prior research without re-running expensive queries.
 
 ## Prerequisites
 
@@ -206,8 +299,8 @@ If the default config file doesn't exist, defaults are used. If `CONTEXT_BRIDGE_
 
 | Mode | Query syntax | Description |
 |------|--------------|-------------|
-| `regex` (default) | Go regex | Case-insensitive regex. Invalid regex falls back to literal match. |
-| `fts5` | SQLite FTS5 MATCH | Full-text search with words, quoted phrases, prefix wildcards (`term*`). |
+| `regex` (default) | Go regex | Case-insensitive regex. Invalid regex patterns return explicit errors. |
+| `fts5` | SQLite FTS5 MATCH | Full-text search. Enter keywords separated by spaces. |
 
 #### MCP behavior
 
@@ -216,7 +309,7 @@ If the default config file doesn't exist, defaults are used. If `CONTEXT_BRIDGE_
 - **Docs** (this README) describe **both** modes so you understand all options.
 - **MCP** (tool descriptions, prompts, hints) shows **only** the active configured mode.
 
-When `search_mode: regex`, the MCP `search` tool describes regex syntax and examples. When `search_mode: fts5`, it describes FTS5 MATCH syntax instead.
+When `search_mode: regex`, the MCP `search` tool describes regex syntax and examples. When `search_mode: fts5`, it describes keyword full-text search semantics (literal-safe sanitization, no raw MATCH operators).
 
 This means agents using Context Bridge receive guidance specific to the active mode — they don't need to guess or read generic docs.
 
@@ -225,14 +318,15 @@ This means agents using Context Bridge receive guidance specific to the active m
 **Regex mode** (default):
 
 - Use Go regex syntax: `auth.*`, `error.*Handler`, `(?i)jwt`
-- Invalid regex automatically falls back to case-insensitive literal match
+- Invalid regex patterns return explicit errors (no fallback)
 - Results appear in capture order (no ranking)
 
 **FTS5 mode**:
 
-- Use words and quoted phrases: `"exact phrase"`, `token*` (prefix), `content:term` (column filter)
-- FTS5 operators: AND (implicit), OR (`term1 OR term2`), NOT (`term1 NOT term2`)
-- Results ranked by BM25 score
+- Enter keywords separated by spaces (each keyword must match)
+- Punctuation and special characters preserved as-is
+- Results ranked by BM25 score internally
+- Matched lines are prefixed with `>>>` and include surrounding context
 
 ### 4. Verify everything works
 
@@ -348,10 +442,10 @@ Lists all captured outputs for a session with sequence numbers, timestamps, size
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `session_id` | string | yes* | OpenCode session ID |
+| `session_id` | string | yes | OpenCode session ID |
 | `agent` | string | no | Filter by agent type (e.g., `grep`, `explore`) |
 
-*Required for MCP usage; the plugin auto-injects this.
+> **Note:** The OpenCode plugin automatically injects `session_id` when calling MCP tools. If you invoke MCP tools directly (e.g., for testing), you must provide the session ID yourself.
 
 **Example:**
 
@@ -434,7 +528,7 @@ Search across all captured outputs for a session. Query syntax depends on the co
 | Mode | Query syntax | Examples |
 |------|--------------|----------|
 | `regex` | Go regex (case-insensitive) | `auth.*`, `error.*Handler`, `(?i)jwt` |
-| `fts5` | FTS5 MATCH | `"exact phrase"`, `token*`, `term1 OR term2` |
+| `fts5` | Keywords (space-separated) | `auth token`, `user@email.com`, `error handler` |
 
 **Example (regex mode):**
 
@@ -451,7 +545,7 @@ Search across all captured outputs for a session. Query syntax depends on the co
 ```json
 {
   "session_id": "ses_abc123",
-  "query": "\"authentication\" JWT",
+  "query": "authentication JWT",
   "context_lines": 5
 }
 ```
@@ -471,6 +565,18 @@ Use `read` with `session_id="ses_abc123"` and the output # to read full content.
      ^^match^^
 ...verify the JWT signature before...
 ```
+
+### How MCP tools work internally
+
+When an agent calls `list`, `read`, or `search`, the flow is:
+
+1. **Root resolution** — Store resolves the provided `session_id` to its root session
+2. **Query** — Store queries captures filtered by the root session
+3. **Render** — MCP server formats results as markdown for agent consumption
+
+For search specifically:
+- Regex mode: Go regex engine against full capture documents
+- FTS5 mode: SQLite FTS5 MATCH with BM25 ranking and snippet highlighting
 
 ## TUI Browser
 
@@ -493,7 +599,7 @@ The TUI has 3 tabs:
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
 | `enter` | Select / open |
-| `tab` / `1` / `2` | Switch tabs |
+| `tab` / `1` / `2` / `3` | Switch tabs |
 | `/` | Filter mode (in sessions/captures list) |
 | `s` | Search in current session |
 | `p` | Settings (search mode: regex/fts5) |
@@ -615,19 +721,70 @@ The search uses standard regular expressions. Try:
 
 ## Architecture
 
-For deep technical details, see [DESIGN.md](./DESIGN.md).
+Context Bridge follows a layered architecture where the TypeScript plugin is a pure transport layer and the Go binary handles all domain logic:
 
-Key components:
+```mermaid
+flowchart TB
+    subgraph OpenCode Runtime
+        OC[OpenCode IDE]
+        P[context-bridge.ts<br/>Plugin 114 lines]
+    end
+    
+    subgraph Go Binary
+        CMD[CLI Entry]
+        SRV[HTTP Server :7438]
+        MCP[MCP Server stdio]
+        TUI[TUI Browser]
+        WEB[Web Dashboard :7440]
+        STORE[(Store Layer)]
+        DB[(SQLite store.db)]
+        FTS[(FTS5 Index)]
+    end
+    
+    OC -->|Task completes| P
+    P -->|HTTP| SRV
+    P -->|HTTP| SRV
+    SRV --> STORE
+    
+    CMD -->|serve| SRV
+    CMD -->|mcp| MCP
+    CMD -->|tui| TUI
+    CMD -->|web| WEB
+    
+    MCP --> STORE
+    TUI --> STORE
+    WEB --> STORE
+    
+    STORE --> DB
+    STORE --> FTS
+```
+
+### Components
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| Store | `internal/store/store.go` | SQLite schema, queries, FTS |
-| MCP | `internal/mcp/mcp.go` | Tool definitions, stdio server |
-| TUI | `internal/tui/*.go` | Bubble Tea terminal browser |
-| Web | `internal/web/web.go` | Web dashboard + API |
-| HTTP | `internal/server/server.go` | Plugin-to-binary bridge |
-| Config | `internal/config/config.go` | Configuration loading, search mode |
-| Plugin | `plugin/opencode/context-bridge.ts` | OpenCode hooks, auto-spawn |
+| Store | `internal/store/store.go` | SQLite schema, queries, FTS, root resolution |
+| MCP | `internal/mcp/mcp.go` | Tool definitions, markdown rendering, stdio server |
+| TUI | `internal/tui/*.go` | Bubbletea terminal browser |
+| Web | `internal/web/web.go` | REST API + embedded SPA |
+| HTTP | `internal/server/server.go` | Plugin endpoints: `/capture`, `/hint`, `/events` |
+| Config | `internal/config/config.go` | Search mode, path resolution |
+| Plugin | `plugin/opencode/context-bridge.ts` | OpenCode hooks, lazy spawn, HTTP bridge |
+
+### Key Design Decisions
+
+1. **Thin plugin, fat backend** — The plugin has zero business logic; it's a pure HTTP bridge. All domain logic lives in Go.
+2. **Root session resolution** — Captures are stored against the root session, so descendant agents automatically access prior research.
+3. **Silent failure model** — The plugin never throws errors into OpenCode's flow. If the backend is unreachable, it degrades gracefully.
+4. **Dual search modes** — Regex (default) or FTS5 full-text search, configured via `config.json`.
+
+### Deeper Documentation
+
+For implementation details, see:
+- [DESIGN.md](./DESIGN.md) — Full architecture and data model
+- [docs/project-architecture.md](./docs/project-architecture.md) — Package relationships
+- [docs/capture-pipeline.md](./docs/capture-pipeline.md) — Capture ingestion details
+- [docs/persistence-model.md](./docs/persistence-model.md) — SQLite schema and FTS5
 
 ## Limitations
 

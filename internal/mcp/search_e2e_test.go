@@ -197,24 +197,18 @@ def validate_token(payload):
 		}
 	})
 
-	t.Run("Scenario 4: Invalid Regex Falls Back to Literal Match", func(t *testing.T) {
+	t.Run("Scenario 4: Invalid Regex Rejected with Explicit Error", func(t *testing.T) {
 		// An unbalanced bracket or parens makes a regex invalid: e.g., "[ERROR" without escaping
+		// The new behavior rejects invalid regex patterns instead of falling back to literal
 		resp := callTool(t, srv, "search", map[string]any{
 			"session_id": sessionID,
-			"query":      "[ERROR", // Invalid regex, but valid literal string
+			"query":      "[ERROR", // Invalid regex pattern
 		})
-		if resp.IsError {
-			t.Fatalf("unexpected error: %v", resp.Text)
+		if !resp.IsError {
+			t.Fatalf("Expected error for invalid regex '[ERROR', but got success")
 		}
-
-		if !strings.Contains(resp.Text, "2 match(es) across 2 outputs.") {
-			t.Errorf("Expected 2 literal match, got:\n%s", resp.Text)
-		}
-		if !strings.Contains(resp.Text, ">>> 16:     print(f\"[ERROR] {msg}\")") {
-			t.Errorf("Expected matched line 16 from Output 2 with literal '[ERROR', got:\n%s", resp.Text)
-		}
-		if !strings.Contains(resp.Text, ">>> 17: [ERROR] 2026-03-22 10:09:06 AuthError") {
-			t.Errorf("Expected matched line 17 from Output 3 with literal '[ERROR', got:\n%s", resp.Text)
+		if !strings.Contains(resp.Text, "invalid regex pattern") {
+			t.Errorf("Expected 'invalid regex pattern' error, got: %s", resp.Text)
 		}
 	})
 
@@ -361,8 +355,8 @@ Stack trace for auth error:
 		if strings.Contains(regexDesc, "FTS5") {
 			t.Errorf("Regex mode should NOT mention FTS5 in description, got: %q", regexDesc)
 		}
-		if !strings.Contains(fts5Desc, "FTS5") {
-			t.Errorf("FTS5 mode should mention FTS5 in description, got: %q", fts5Desc)
+		if !strings.Contains(fts5Desc, "keyword") {
+			t.Errorf("FTS5 mode should mention keyword search in description, got: %q", fts5Desc)
 		}
 	})
 

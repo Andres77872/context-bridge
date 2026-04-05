@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -473,6 +474,71 @@ func TestUpdateConfigRejectsInvalidUpdate(t *testing.T) {
 	}
 }
 
+// TestSearchModePersistence verifies search_mode persists across save/load cycles.
+func TestSearchModePersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	// Test FTS5 mode persistence
+	fts5Cfg := Config{SearchMode: SearchModeFTS5}
+	if err := SaveConfig(path, fts5Cfg); err != nil {
+		t.Fatalf("save FTS5 config: %v", err)
+	}
+
+	loadedFTS5, err := LoadConfig(path, true)
+	if err != nil {
+		t.Fatalf("load FTS5 config: %v", err)
+	}
+	if loadedFTS5.SearchMode != SearchModeFTS5 {
+		t.Fatalf("FTS5 mode not persisted: expected %q, got %q", SearchModeFTS5, loadedFTS5.SearchMode)
+	}
+
+	// Test regex mode persistence
+	regexCfg := Config{SearchMode: SearchModeRegex}
+	if err := SaveConfig(path, regexCfg); err != nil {
+		t.Fatalf("save regex config: %v", err)
+	}
+
+	loadedRegex, err := LoadConfig(path, true)
+	if err != nil {
+		t.Fatalf("load regex config: %v", err)
+	}
+	if loadedRegex.SearchMode != SearchModeRegex {
+		t.Fatalf("regex mode not persisted: expected %q, got %q", SearchModeRegex, loadedRegex.SearchMode)
+	}
+}
+
+// TestSearchModePreservedOnOtherConfigChanges verifies search_mode isn't lost
+// when other config values change (simulates user changing unrelated settings).
+func TestSearchModePreservedOnOtherConfigChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	// Start with FTS5 mode
+	original := Config{SearchMode: SearchModeFTS5}
+	if err := SaveConfig(path, original); err != nil {
+		t.Fatalf("save original: %v", err)
+	}
+
+	// "Modify another config value" - currently only search_mode exists,
+	// but this test ensures the pattern is correct for future config additions
+	err := UpdateConfig(path, true, func(cfg Config) Config {
+		// Keep search_mode unchanged
+		return cfg
+	})
+	if err != nil {
+		t.Fatalf("update config: %v", err)
+	}
+
+	loaded, err := LoadConfig(path, true)
+	if err != nil {
+		t.Fatalf("load updated: %v", err)
+	}
+	if loaded.SearchMode != SearchModeFTS5 {
+		t.Fatalf("search_mode should be preserved: expected %q, got %q", SearchModeFTS5, loaded.SearchMode)
+	}
+}
+
 func writeConfigFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
@@ -487,4 +553,84 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestSaveConfigRawJSONContainsSearchMode verifies the saved config file
+// contains the literal JSON field "search_mode" with correct value.
+// This provides raw file evidence for verification.
+func TestSaveConfigRawJSONContainsSearchMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      SearchMode
+		wantField string
+	}{
+		{
+			name:      "FTS5 mode config",
+			mode:      SearchModeFTS5,
+			wantField: `"search_mode": "fts5"`,
+		},
+		{
+			name:      "Regex mode config",
+			mode:      SearchModeRegex,
+			wantField: `"search_mode": "regex"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			cfg := Config{SearchMode: tt.mode}
+
+			if err := SaveConfig(path, cfg); err != nil {
+				t.Fatalf("save config: %v", err)
+			}
+
+			// Read raw file bytes
+			rawContent, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read config file: %v", err)
+			}
+
+			rawJSON := string(rawContent)
+
+			// Verify the JSON contains the search_mode field with correct value
+			if !strings.Contains(rawJSON, tt.wantField) {
+				t.Errorf("saved config JSON should contain %q, got:\n%s", tt.wantField, rawJSON)
+			}
+
+			// Verify it's valid JSON structure
+			if !strings.Contains(rawJSON, "{") || !strings.Contains(rawJSON, "}") {
+				t.Errorf("saved config should be valid JSON object, got:\n%s", rawJSON)
+			}
+		})
+	}
+}
+
+// TestSaveConfigJSONFormatIsCorrect verifies the JSON structure matches expected format.
+func TestSaveConfigJSONFormatIsCorrect(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := Config{SearchMode: SearchModeFTS5}
+
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	rawContent, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	// Expected JSON format with indentation
+	expectedFormat := `{
+  "search_mode": "fts5"
+}`
+	// Normalize whitespace for comparison
+	rawJSON := strings.TrimSpace(string(rawContent))
+	expectedNorm := strings.TrimSpace(expectedFormat)
+
+	if rawJSON != expectedNorm {
+		t.Errorf("JSON format mismatch.\nExpected:\n%s\nGot:\n%s", expectedNorm, rawJSON)
+	}
 }

@@ -64,7 +64,7 @@ function extractOutputText(output: any): string | null {
   return null;
 }
 
-export const ContextBridge: Plugin = async () => {
+const server: Plugin = async (input, options) => {
   await ensureBridge();
 
   return {
@@ -112,3 +112,10 @@ export const ContextBridge: Plugin = async () => {
     },
   };
 };
+
+export default {
+  id: "context-bridge",
+  server,
+};
+
+export { server as ContextBridge };

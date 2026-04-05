@@ -397,12 +397,12 @@ func TestRoutesServeHTMLWithParityControls(t *testing.T) {
 	}
 }
 
-func TestHandleSearchFTS5InvalidSyntax(t *testing.T) {
+func TestHandleSearchFTS5SanitizerHandlesUnmatchedQuote(t *testing.T) {
 	st := openTestStore(t)
-	if err := st.EnsureSession("ses_fts5_err", ""); err != nil {
+	if err := st.EnsureSession("ses_fts5_sanitize", ""); err != nil {
 		t.Fatalf("ensure session: %v", err)
 	}
-	seedSession(t, st, "ses_fts5_err", []struct {
+	seedSession(t, st, "ses_fts5_sanitize", []struct {
 		seq     int
 		agent   string
 		desc    string
@@ -412,13 +412,17 @@ func TestHandleSearchFTS5InvalidSyntax(t *testing.T) {
 	})
 
 	srv := New(st, store.SearchModeFTS5, filepath.Join(t.TempDir(), "config.json"))
-	req := httptest.NewRequest("GET", "/api/sessions/ses_fts5_err/search?q=\"unmatched", nil)
-	req.SetPathValue("id", "ses_fts5_err")
+	// The FTS5 sanitizer properly handles unmatched quotes by escaping them
+	// Input: "unmatched -> becomes valid FTS5 query: """unmatched"
+	req := httptest.NewRequest("GET", "/api/sessions/ses_fts5_sanitize/search?q=\"unmatched", nil)
+	req.SetPathValue("id", "ses_fts5_sanitize")
 	rec := httptest.NewRecorder()
 	srv.handleSearch(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500 for invalid FTS5 syntax, got %d: %s", rec.Code, rec.Body.String())
+	// The sanitizer makes this a valid query, so it should return 200 with no results
+	// (the content doesn't contain "unmatched")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for sanitized FTS5 query, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

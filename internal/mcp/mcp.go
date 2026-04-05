@@ -16,15 +16,15 @@ func serverInstructions(mode SearchMode) string {
 	case store.SearchModeFTS5:
 		return `Context Bridge exposes same-session research history captured from OpenCode subagents.
 
-Use ` + "`list`" + ` to list prior outputs, ` + "`search`" + ` to search them (FTS5 syntax), and ` + "`read`" + ` to read one by output number.
+Use ` + "`list`" + ` to list prior outputs, ` + "`search`" + ` to search them (keyword mode), and ` + "`read`" + ` to read one by output number.
 
-The ` + "`search`" + ` tool uses FTS5 full-text search (SQLite MATCH syntax). Use words and quoted phrases: "error handler", token* (prefix), column:value (column filter).`
+The ` + "`search`" + ` tool uses SQLite FTS5 full-text search. Enter keywords separated by spaces. Each keyword must appear in the content. Punctuation and special characters are preserved.`
 	default:
 		return `Context Bridge exposes same-session research history captured from OpenCode subagents.
 
 Use ` + "`list`" + ` to list prior outputs, ` + "`search`" + ` to search them (regex), and ` + "`read`" + ` to read one by output number.
 
-The ` + "`search`" + ` tool uses case-insensitive Go regex. Invalid regex falls back to literal match. Examples: auth.*, error.*Handler, (?i)jwt.`
+The ` + "`search`" + ` tool uses case-insensitive Go regex. Invalid regex patterns return explicit errors. Examples: auth.*, error.*Handler, (?i)jwt.`
 	}
 }
 
@@ -50,16 +50,16 @@ func Serve(st *store.Store, version string, searchMode SearchMode) error {
 func searchDescription(mode SearchMode) string {
 	switch mode {
 	case store.SearchModeFTS5:
-		return "Search across all captured outputs for the current session context using FTS5 full-text search (SQLite MATCH syntax). Use words, quoted phrases, and FTS5 operators."
+		return "Search across all captured outputs using keyword full-text search. Enter words or phrases separated by spaces. Each keyword must match."
 	default:
-		return "Search across all captured outputs for the current session context using case-insensitive Go regex. Invalid regex falls back to literal match."
+		return "Search across all captured outputs using case-insensitive Go regex. Invalid regex patterns return explicit errors."
 	}
 }
 
 func searchQueryHint(mode SearchMode) string {
 	switch mode {
 	case store.SearchModeFTS5:
-		return "FTS5 MATCH query: words, quoted phrases (\"exact phrase\"), prefix wildcards (term*), column filters (content:term)."
+		return "Keywords separated by spaces. Each keyword must appear in the content. Punctuation preserved. Examples: auth token, user@email.com, C++."
 	default:
 		return "Case-insensitive Go regex pattern or literal text. Examples: auth.*, error.*Handler, (?i)jwt, token."
 	}

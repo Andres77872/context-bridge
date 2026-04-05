@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"context-bridge/internal/search"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -394,10 +396,10 @@ func (s *Store) Search(sessionID, query string, contextLines int) ([]SearchResul
 		contextLines = 3
 	}
 
-	// Try compiling as regex. If it fails, fall back to literal case-insensitive match by quoting.
+	// Try compiling as regex. If it fails, return explicit error.
 	re, err := regexp.Compile("(?i)" + query)
 	if err != nil {
-		re = regexp.MustCompile("(?i)" + regexp.QuoteMeta(query))
+		return nil, fmt.Errorf("invalid regex pattern: %w", err)
 	}
 
 	rows, err := s.db.Query(`
@@ -461,27 +463,33 @@ func (s *Store) searchFTS5(sessionID, query string, contextLines int) ([]SearchR
 		contextLines = 3
 	}
 
+	// Sanitize user input for safe FTS5 MATCH expression
+	matchQuery, err := search.BuildLiteralFTS5Match(query)
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := s.db.Query(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.bytes, c.source_path, c.captured_at, ses.deleted_at,
+		       highlight(captures_fts, 1, '<<CBHL>>', '<</CBHL>>') AS content_hl
 		FROM captures c
 		JOIN sessions ses ON ses.id = c.session_id
-		JOIN captures_fts fts ON fts.rowid = c.id
+		JOIN captures_fts ON captures_fts.rowid = c.id
 		WHERE c.session_id = ? AND captures_fts MATCH ?
-		ORDER BY c.seq ASC
-	`, rootID, query)
+		ORDER BY rank, c.seq ASC
+	`, rootID, matchQuery)
 	if err != nil {
 		return nil, fmt.Errorf("fts5 query failed: %w", err)
 	}
 	defer rows.Close()
 
-	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(query))
 	var results []SearchResult
 	for rows.Next() {
-		record, err := scanCapture(rows, true)
+		record, contentHL, err := scanCaptureWithHighlight(rows)
 		if err != nil {
 			return nil, err
 		}
-		snippet, matches := buildSnippet(record.Content, re, contextLines)
+		snippet, matches := buildFTS5Snippet(contentHL, contextLines)
 		if matches == 0 {
 			continue
 		}
@@ -493,7 +501,7 @@ func (s *Store) searchFTS5(sessionID, query string, contextLines int) ([]SearchR
 	return results, nil
 }
 
-func (s *Store) RenderHint(sessionID string) (string, error) {
+func (s *Store) RenderHint(sessionID string, mode SearchMode) (string, error) {
 	rootID, err := s.ResolveRoot(sessionID)
 	if err != nil {
 		return "", err
@@ -523,9 +531,68 @@ func (s *Store) RenderHint(sessionID string) (string, error) {
 		fmt.Sprintf("- Use `search` with `session_id=%q` and keywords to find specific info", rootID),
 		fmt.Sprintf("- Use `list` with `session_id=%q` to see the full list with previews", rootID),
 		"Do NOT redo research that already exists.",
+		"",
+		"### Tools",
+		"",
+		"OpenCode auto-prefixes ALL MCP tool names as `{server-name}_{tool-name}`. The context-bridge MCP server registers three tools:",
+		"",
+		"| Tool | Purpose | When to Use |",
+		"| --- | --- | --- |",
+		"| `context-bridge_search` | Search across all outputs by keyword. Returns matching snippets with context lines. | You need specific info but don't know which output has it. **START HERE for most tasks.** |",
+		"| `context-bridge_read` | Read the full content of a specific output by its number. | You identified a relevant output (from the hint list or from search results) and need its full content. |",
+		"| `context-bridge_list` | Summary table of all outputs with timestamps, sizes, and previews. | You need an overview of what exists. Rarely needed -- the hint already lists outputs. |",
+		"",
+		"### Decision Flow",
+		"",
+		"1. Your system prompt lists prior outputs with numbers, agent types, and descriptions",
+		"2. If the task clearly relates to a listed output -- use `context-bridge_read` with that output number",
+		"3. If you need to find specific information -- use `context-bridge_search` with a keyword",
+		"4. Only read full outputs that are relevant to your task -- do not read everything",
+		"",
+		"### Relationship to Engram",
+		"",
+		"| Mechanism | Scope | Persistence | When to Use |",
+		"| --- | --- | --- | --- |",
+		"| Context Bridge tools | Current session only | Ephemeral (dies with session) | Same-session subagent outputs -- fresh research, recent exploration |",
+		"| `mem_search` / `mem_get_observation` | Cross-session | Persistent (survives forever) | Historical context, previous session findings, architectural decisions |",
+		"",
+		"**Check BOTH** when recovering context -- context bridge for fresh same-session work, engram for historical knowledge.",
 	)
 
+	// Add mode-specific search guidance
+	lines = appendModeSpecificGuidance(lines, mode)
+
 	return strings.Join(lines, "\n"), nil
+}
+
+// appendModeSpecificGuidance adds search-engine-specific tips to the hint output.
+// The guidance reflects the active search mode's query semantics.
+func appendModeSpecificGuidance(lines []string, mode SearchMode) []string {
+	switch mode {
+	case SearchModeFTS5:
+		return append(lines,
+			"",
+			"### FTS5 Search Tips",
+			"",
+			"The `search` tool uses SQLite FTS5 full-text search:",
+			"- Enter keywords separated by spaces",
+			"- Each keyword must appear in the content (implicit AND)",
+			"- Punctuation and special characters are preserved as-is",
+			"- Results ranked by BM25 relevance score",
+			"",
+			"**Tokenizer behavior**: Terms like `user@email.com` tokenize as separate words (`user`, `email`, `com`). Search each word separately or use a unique portion.",
+		)
+	default: // SearchModeRegex or empty
+		return append(lines,
+			"",
+			"### Regex Search Tips",
+			"",
+			"The `search` tool uses case-insensitive Go regex:",
+			"- Patterns: `auth.*`, `error.*Handler`, `(?i)jwt`",
+			"- Invalid patterns return explicit errors (no fallback)",
+			"- Use valid regex syntax or simple literal terms",
+		)
+	}
 }
 
 func (s *Store) migrate() error {
@@ -680,6 +747,96 @@ func scanCapture(s scanner, withContent bool) (*CaptureRecord, error) {
 		record.DeletedAt = &t
 	}
 	return &record, nil
+}
+
+// scanCaptureWithHighlight scans a capture row including the FTS5-highlighted content column.
+// It returns the capture record and the highlighted content string separately.
+func scanCaptureWithHighlight(s scanner) (*CaptureRecord, string, error) {
+	var record CaptureRecord
+	var child sql.NullString
+	var source sql.NullString
+	var capturedAt string
+	var deletedAt sql.NullString
+	var contentHL string
+
+	if err := s.Scan(&record.ID, &record.SessionID, &record.Seq, &child, &record.CallID, &record.Agent, &record.Description, &record.Preview, &record.Bytes, &source, &capturedAt, &deletedAt, &contentHL); err != nil {
+		return nil, "", err
+	}
+
+	record.ChildSessionID = child.String
+	record.SourcePath = source.String
+	record.CapturedAt = parseDBTime(capturedAt)
+	if deletedAt.Valid {
+		t := parseDBTime(deletedAt.String)
+		record.DeletedAt = &t
+	}
+	return &record, contentHL, nil
+}
+
+const (
+	fts5HighlightStart = "<<CBHL>>"
+	fts5HighlightEnd   = "<</CBHL>>"
+)
+
+// buildFTS5Snippet builds a snippet from FTS5-highlighted content.
+// It extracts lines containing highlight markers and builds context windows.
+// The markers are stripped from the final output and matched lines are marked with ">>>".
+func buildFTS5Snippet(contentHL string, contextLines int) (string, int) {
+	lines := strings.Split(contentHL, "\n")
+	var matches []int
+
+	// Find lines containing highlight markers
+	for idx, line := range lines {
+		if strings.Contains(line, fts5HighlightStart) {
+			matches = append(matches, idx)
+		}
+	}
+
+	if len(matches) == 0 {
+		return "", 0
+	}
+
+	type span struct{ start, end int }
+	var spans []span
+	for _, match := range matches {
+		start := match - contextLines
+		if start < 0 {
+			start = 0
+		}
+		end := match + contextLines
+		if end >= len(lines) {
+			end = len(lines) - 1
+		}
+		if len(spans) > 0 && start <= spans[len(spans)-1].end+1 {
+			spans[len(spans)-1].end = end
+			continue
+		}
+		spans = append(spans, span{start: start, end: end})
+	}
+	if len(spans) > 5 {
+		spans = spans[:5]
+	}
+
+	var blocks []string
+	for _, sp := range spans {
+		var snippetLines []string
+		for i := sp.start; i <= sp.end; i++ {
+			prefix := "   "
+			for _, match := range matches {
+				if match == i {
+					prefix = ">>>"
+					break
+				}
+			}
+			// Strip highlight markers from the line content
+			cleanLine := strings.ReplaceAll(lines[i], fts5HighlightStart, "")
+			cleanLine = strings.ReplaceAll(cleanLine, fts5HighlightEnd, "")
+			snippetLines = append(snippetLines, fmt.Sprintf("%s %d: %s", prefix, i+1, cleanLine))
+		}
+		blocks = append(blocks, "```\n"+strings.Join(snippetLines, "\n")+"\n```")
+	}
+
+	return strings.Join(blocks, "\n\n"), len(matches)
 }
 
 func normalizeAgent(agent string) string {

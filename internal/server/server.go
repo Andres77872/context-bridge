@@ -12,12 +12,13 @@ import (
 )
 
 type Server struct {
-	store *store.Store
-	mux   *http.ServeMux
+	store      *store.Store
+	mux        *http.ServeMux
+	searchMode store.SearchMode
 }
 
-func New(st *store.Store) *Server {
-	s := &Server{store: st, mux: http.NewServeMux()}
+func New(st *store.Store, searchMode store.SearchMode) *Server {
+	s := &Server{store: st, mux: http.NewServeMux(), searchMode: searchMode}
 	s.routes()
 	return s
 }
@@ -127,7 +128,7 @@ func (s *Server) handleHint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hint, err := s.store.RenderHint(sessionID)
+	hint, err := s.store.RenderHint(sessionID, s.searchMode)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

@@ -72,13 +72,19 @@ func cmdServe(args []string) error {
 		return err
 	}
 
+	cfgPath := config.ResolveConfigPath(os.LookupEnv, os.UserConfigDir)
+	cfg, err := config.LoadConfig(cfgPath, cfgPath != "" && os.Getenv("CONTEXT_BRIDGE_CONFIG") != "")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	srv := server.New(st)
+	srv := server.New(st, store.SearchMode(cfg.SearchMode))
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Routes(),

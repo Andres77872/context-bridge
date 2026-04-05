@@ -15,7 +15,7 @@ import (
 
 func TestHealthEndpoint(t *testing.T) {
 	st := openTestStore(t)
-	srv := New(st)
+	srv := New(st, store.SearchModeRegex)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -33,7 +33,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 func TestSessionCreatedEventLinksChildToRoot(t *testing.T) {
 	st := openTestStore(t)
-	srv := New(st)
+	srv := New(st, store.SearchModeRegex)
 
 	rec := postJSON(t, srv.Routes(), "/events", map[string]any{
 		"type": "session.created",
@@ -59,7 +59,7 @@ func TestSessionCreatedEventLinksChildToRoot(t *testing.T) {
 
 func TestSessionDeletedEventMarksSessionDeleted(t *testing.T) {
 	st := openTestStore(t)
-	srv := New(st)
+	srv := New(st, store.SearchModeRegex)
 
 	if err := st.EnsureSession("ses-root", ""); err != nil {
 		t.Fatalf("EnsureSession: %v", err)
@@ -89,7 +89,7 @@ func TestSessionDeletedEventMarksSessionDeleted(t *testing.T) {
 
 func TestCaptureEndpointIngestsAndDedupes(t *testing.T) {
 	st := openTestStore(t)
-	srv := New(st)
+	srv := New(st, store.SearchModeRegex)
 	capturedAt := time.Date(2026, 3, 22, 14, 0, 0, 0, time.UTC)
 
 	payload := map[string]any{
@@ -134,7 +134,7 @@ func TestCaptureEndpointIngestsAndDedupes(t *testing.T) {
 
 func TestHintEndpointReturnsRenderedHint(t *testing.T) {
 	st := openTestStore(t)
-	srv := New(st)
+	srv := New(st, store.SearchModeRegex)
 	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
 		childSessionID: "ses-child",
 		callID:         "call-1",

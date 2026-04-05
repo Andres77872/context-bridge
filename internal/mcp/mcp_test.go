@@ -154,7 +154,7 @@ func TestSearchDescriptionReflectsMode(t *testing.T) {
 		contains string
 	}{
 		{store.SearchModeRegex, "regex"},
-		{store.SearchModeFTS5, "FTS5"},
+		{store.SearchModeFTS5, "keyword"},
 	}
 
 	for _, tc := range tests {
@@ -203,11 +203,11 @@ func TestSearchQueryHintReflectsMode(t *testing.T) {
 		{
 			mode:        store.SearchModeRegex,
 			wantContain: "regex",
-			wantExclude: "FTS5",
+			wantExclude: "Keywords",
 		},
 		{
 			mode:        store.SearchModeFTS5,
-			wantContain: "FTS5",
+			wantContain: "Keywords",
 			wantExclude: "regex",
 		},
 	}
@@ -249,11 +249,131 @@ func TestMCPToolDescriptionsAreModeSpecific(t *testing.T) {
 		t.Errorf("regex mode search tool description should NOT contain 'FTS5', got: %q", regexSearchDesc)
 	}
 
-	if !strings.Contains(fts5SearchDesc, "FTS5") {
-		t.Errorf("FTS5 mode search tool description should contain 'FTS5', got: %q", fts5SearchDesc)
+	if !strings.Contains(fts5SearchDesc, "keyword") {
+		t.Errorf("FTS5 mode search tool description should contain 'keyword', got: %q", fts5SearchDesc)
 	}
 	if strings.Contains(fts5SearchDesc, "regex") {
 		t.Errorf("FTS5 mode search tool description should NOT contain 'regex', got: %q", fts5SearchDesc)
+	}
+}
+
+// TestMCPFTS5DescriptionsNoUnsupportedOperators verifies FTS5 mode MCP descriptions
+// do NOT advertise advanced FTS5 operators that are unsupported by the literal-sanitized runtime.
+// The runtime uses BuildLiteralFTS5Match() which quotes all input as literal strings.
+// Operators like auth*, content:jwt, AND/OR/NOT, NEAR() are NOT supported.
+func TestMCPFTS5DescriptionsNoUnsupportedOperators(t *testing.T) {
+	st := openTestStore(t)
+	fts5Srv := New(st, "test", store.SearchModeFTS5)
+
+	// Get all description surfaces
+	instructions := serverInstructions(store.SearchModeFTS5)
+	searchDesc := searchDescription(store.SearchModeFTS5)
+	queryHint := searchQueryHint(store.SearchModeFTS5)
+	toolsResp := callListTools(t, fts5Srv)
+	toolDesc := findToolDescription(toolsResp, "search")
+
+	// Unsupported operators that should NOT appear in FTS5 mode descriptions
+	unsupportedOperators := []string{
+		"auth*",       // prefix wildcard - becomes literal "auth*" in sanitizer
+		"content:jwt", // column filter - becomes literal "content:jwt" in sanitizer
+		"AND",         // boolean operator - lowercase becomes literal
+		"OR",          // boolean operator - lowercase becomes literal
+		"NOT",         // boolean operator - lowercase becomes literal
+		"NEAR()",      // proximity query - not supported
+		"NEAR",        // proximity query keyword
+		"prefix*",     // prefix wildcard syntax reference
+		"column:",     // column filter syntax reference
+		"boolean",     // references to boolean operators
+		"operator",    // references to advanced operators
+		"advanced",    // references to advanced syntax
+		"raw",         // references to raw MATCH mode
+	}
+
+	for _, op := range unsupportedOperators {
+		// Check serverInstructions
+		if strings.Contains(instructions, op) {
+			t.Errorf("FTS5 serverInstructions should NOT contain unsupported operator %q, got:\n%s", op, instructions)
+		}
+		// Check searchDescription
+		if strings.Contains(searchDesc, op) {
+			t.Errorf("FTS5 searchDescription should NOT contain unsupported operator %q, got:\n%s", op, searchDesc)
+		}
+		// Check searchQueryHint
+		if strings.Contains(queryHint, op) {
+			t.Errorf("FTS5 searchQueryHint should NOT contain unsupported operator %q, got:\n%s", op, queryHint)
+		}
+		// Check tool description from MCP
+		if strings.Contains(toolDesc, op) {
+			t.Errorf("FTS5 MCP tool description should NOT contain unsupported operator %q, got:\n%s", op, toolDesc)
+		}
+	}
+
+	// Verify FTS5 descriptions contain correct guidance
+	expectedGuidance := []string{
+		"keyword",      // describes keyword-based search
+		"spaces",       // describes whitespace-separated terms
+		"Each keyword", // describes AND semantics
+	}
+
+	for _, guidance := range expectedGuidance {
+		if !strings.Contains(searchDesc, guidance) && !strings.Contains(queryHint, guidance) {
+			t.Errorf("FTS5 guidance should mention %q somewhere, searchDesc=%q, queryHint=%q", guidance, searchDesc, queryHint)
+		}
+	}
+}
+
+// TestMCPRegexModeDescriptionIncludesRejectionLanguage proves the regex-mode MCP tool
+// description explicitly states that invalid patterns return errors (not fallback).
+// This verifies the "Invalid Regex Pattern Rejection" spec scenario:
+// "MCP tool description reflects rejection".
+func TestMCPRegexModeDescriptionIncludesRejectionLanguage(t *testing.T) {
+	st := openTestStore(t)
+	regexSrv := New(st, "test", store.SearchModeRegex)
+
+	// Get tool descriptions from MCP tools/list endpoint
+	toolsResp := callListTools(t, regexSrv)
+	toolDesc := findToolDescription(toolsResp, "search")
+
+	if toolDesc == "" {
+		t.Fatal("search tool description empty for regex mode")
+	}
+
+	// The description MUST explicitly state that invalid patterns return errors
+	expectedPhrases := []string{
+		"Invalid regex patterns return explicit errors",
+		"regex",
+	}
+
+	for _, phrase := range expectedPhrases {
+		if !strings.Contains(toolDesc, phrase) {
+			t.Errorf("Regex mode MCP tool description should contain %q, got: %q", phrase, toolDesc)
+		}
+	}
+
+	// The description MUST NOT promise fallback to literal matching
+	fallbackPhrases := []string{
+		"falls back",
+		"fallback",
+		"literal match",
+		"QuoteMeta",
+	}
+
+	for _, phrase := range fallbackPhrases {
+		if strings.Contains(toolDesc, phrase) {
+			t.Errorf("Regex mode MCP tool description should NOT contain fallback language %q, got: %q", phrase, toolDesc)
+		}
+	}
+
+	// Also verify server instructions contain rejection warning
+	instructions := serverInstructions(store.SearchModeRegex)
+	if !strings.Contains(instructions, "Invalid regex patterns return explicit errors") {
+		t.Errorf("Regex serverInstructions should contain rejection language, got:\n%s", instructions)
+	}
+
+	// Verify search description also contains rejection warning
+	desc := searchDescription(store.SearchModeRegex)
+	if !strings.Contains(desc, "Invalid regex patterns return explicit errors") {
+		t.Errorf("Regex searchDescription should contain rejection language, got: %q", desc)
 	}
 }
 

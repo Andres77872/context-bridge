@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 type Store struct {
 	db *sql.DB
@@ -45,6 +45,7 @@ type CaptureRecord struct {
 	SourcePath     string
 	CapturedAt     time.Time
 	DeletedAt      *time.Time
+	EndedAt        *time.Time
 }
 
 type SearchResult struct {
@@ -59,6 +60,7 @@ type SessionSummary struct {
 	LastCapturedAt time.Time
 	CaptureCount   int
 	DeletedAt      *time.Time
+	EndedAt        *time.Time
 }
 
 func Open(dbPath string) (*Store, error) {
@@ -124,14 +126,9 @@ func (s *Store) EnsureSession(id, parentID string) error {
 	if parentID != "" && parentID != id {
 		if _, err := tx.Exec(`
 			UPDATE sessions
-			SET parent_id = COALESCE(parent_id, NULLIF(?, '')),
-			    deleted_at = NULL
+			SET parent_id = COALESCE(parent_id, NULLIF(?, ''))
 			WHERE id = ?
 		`, parentID, id); err != nil {
-			return err
-		}
-	} else {
-		if _, err := tx.Exec(`UPDATE sessions SET deleted_at = NULL WHERE id = ?`, id); err != nil {
 			return err
 		}
 	}
@@ -176,6 +173,15 @@ func (s *Store) MarkSessionDeleted(id string) error {
 		return errors.New("session id is required")
 	}
 	_, err := s.db.Exec(`UPDATE sessions SET deleted_at = datetime('now') WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) MarkSessionEnded(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("session id is required")
+	}
+	_, err := s.db.Exec(`UPDATE sessions SET ended_at = datetime('now') WHERE id = ?`, id)
 	return err
 }
 
@@ -256,10 +262,10 @@ func (s *Store) ListCaptures(sessionID, agent string) ([]CaptureRecord, error) {
 	}
 
 	query := `
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.bytes, c.source_path, c.captured_at, s.deleted_at
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.bytes, c.source_path, c.captured_at, s.deleted_at, s.ended_at
 		FROM captures c
 		JOIN sessions s ON s.id = c.session_id
-		WHERE c.session_id = ?
+		WHERE c.session_id = ? AND s.deleted_at IS NULL
 	`
 	args := []any{rootID}
 	if strings.TrimSpace(agent) != "" {
@@ -293,10 +299,10 @@ func (s *Store) GetCaptureBySeq(sessionID string, seq int) (*CaptureRecord, erro
 	}
 
 	row := s.db.QueryRow(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, s.deleted_at
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, s.deleted_at, s.ended_at
 		FROM captures c
 		JOIN sessions s ON s.id = c.session_id
-		WHERE c.session_id = ? AND c.seq = ?
+		WHERE c.session_id = ? AND c.seq = ? AND s.deleted_at IS NULL
 	`, rootID, seq)
 
 	record, err := scanCapture(row, true)
@@ -319,12 +325,13 @@ func (s *Store) ListRootSessions(limit int) ([]SessionSummary, error) {
 			s.id,
 			s.created_at,
 			s.deleted_at,
+			s.ended_at,
 			COUNT(c.id) AS capture_count,
 			MAX(c.captured_at) AS last_captured_at
 		FROM sessions s
 		LEFT JOIN captures c ON c.session_id = s.id
-		WHERE s.parent_id IS NULL
-		GROUP BY s.id, s.created_at, s.deleted_at
+		WHERE s.parent_id IS NULL AND s.deleted_at IS NULL
+		GROUP BY s.id, s.created_at, s.deleted_at, s.ended_at
 		ORDER BY COALESCE(MAX(c.captured_at), s.created_at) DESC, s.created_at DESC
 		LIMIT ?
 	`, limit)
@@ -338,9 +345,10 @@ func (s *Store) ListRootSessions(limit int) ([]SessionSummary, error) {
 		var summary SessionSummary
 		var createdAt string
 		var deletedAt sql.NullString
+		var endedAt sql.NullString
 		var lastCapturedAt sql.NullString
 
-		if err := rows.Scan(&summary.ID, &createdAt, &deletedAt, &summary.CaptureCount, &lastCapturedAt); err != nil {
+		if err := rows.Scan(&summary.ID, &createdAt, &deletedAt, &endedAt, &summary.CaptureCount, &lastCapturedAt); err != nil {
 			return nil, err
 		}
 
@@ -351,6 +359,10 @@ func (s *Store) ListRootSessions(limit int) ([]SessionSummary, error) {
 		if deletedAt.Valid {
 			t := parseDBTime(deletedAt.String)
 			summary.DeletedAt = &t
+		}
+		if endedAt.Valid {
+			t := parseDBTime(endedAt.String)
+			summary.EndedAt = &t
 		}
 
 		sessions = append(sessions, summary)
@@ -403,10 +415,10 @@ func (s *Store) Search(sessionID, query string, contextLines int) ([]SearchResul
 	}
 
 	rows, err := s.db.Query(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at, ses.ended_at
 		FROM captures c
 		JOIN sessions ses ON ses.id = c.session_id
-		WHERE c.session_id = ?
+		WHERE c.session_id = ? AND ses.deleted_at IS NULL
 		ORDER BY c.seq ASC
 	`, rootID)
 	if err != nil {
@@ -470,12 +482,12 @@ func (s *Store) searchFTS5(sessionID, query string, contextLines int) ([]SearchR
 	}
 
 	rows, err := s.db.Query(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.bytes, c.source_path, c.captured_at, ses.deleted_at,
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.bytes, c.source_path, c.captured_at, ses.deleted_at, ses.ended_at,
 		       highlight(captures_fts, 1, '<<CBHL>>', '<</CBHL>>') AS content_hl
 		FROM captures c
 		JOIN sessions ses ON ses.id = c.session_id
 		JOIN captures_fts ON captures_fts.rowid = c.id
-		WHERE c.session_id = ? AND captures_fts MATCH ?
+		WHERE c.session_id = ? AND ses.deleted_at IS NULL AND captures_fts MATCH ?
 		ORDER BY rank, c.seq ASC
 	`, rootID, matchQuery)
 	if err != nil {
@@ -621,47 +633,65 @@ func (s *Store) migrate() error {
 	}
 	defer tx.Rollback()
 
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS sessions (
-			id TEXT PRIMARY KEY,
-			parent_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			deleted_at TEXT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS captures (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT NOT NULL REFERENCES sessions(id),
-			seq INTEGER NOT NULL,
-			child_session_id TEXT NULL,
-			call_id TEXT NOT NULL,
-			agent TEXT NOT NULL DEFAULT 'unknown',
-			description TEXT NOT NULL DEFAULT '',
-			content TEXT NOT NULL,
-			preview TEXT NOT NULL DEFAULT '',
-			bytes INTEGER NOT NULL DEFAULT 0,
-			source_path TEXT NULL,
-			captured_at TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			UNIQUE(session_id, seq),
-			UNIQUE(session_id, call_id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_captures_session ON captures(session_id, seq)`,
-		`CREATE INDEX IF NOT EXISTS idx_captures_agent ON captures(session_id, agent)`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS captures_fts USING fts5(description, content, content='captures', content_rowid='id')`,
-		`CREATE TRIGGER IF NOT EXISTS captures_ai AFTER INSERT ON captures BEGIN INSERT INTO captures_fts(rowid, description, content) VALUES (new.id, new.description, new.content); END`,
-		`CREATE TRIGGER IF NOT EXISTS captures_ad AFTER DELETE ON captures BEGIN INSERT INTO captures_fts(captures_fts, rowid, description, content) VALUES ('delete', old.id, old.description, old.content); END`,
-		`CREATE TRIGGER IF NOT EXISTS captures_au AFTER UPDATE ON captures BEGIN INSERT INTO captures_fts(captures_fts, rowid, description, content) VALUES ('delete', old.id, old.description, old.content); INSERT INTO captures_fts(rowid, description, content) VALUES (new.id, new.description, new.content); END`,
-	}
+	if version < 1 {
+		statements := []string{
+			`CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY,
+				parent_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				deleted_at TEXT NULL
+			)`,
+			`CREATE TABLE IF NOT EXISTS captures (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id),
+				seq INTEGER NOT NULL,
+				child_session_id TEXT NULL,
+				call_id TEXT NOT NULL,
+				agent TEXT NOT NULL DEFAULT 'unknown',
+				description TEXT NOT NULL DEFAULT '',
+				content TEXT NOT NULL,
+				preview TEXT NOT NULL DEFAULT '',
+				bytes INTEGER NOT NULL DEFAULT 0,
+				source_path TEXT NULL,
+				captured_at TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				UNIQUE(session_id, seq),
+				UNIQUE(session_id, call_id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_captures_session ON captures(session_id, seq)`,
+			`CREATE INDEX IF NOT EXISTS idx_captures_agent ON captures(session_id, agent)`,
+			`CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)`,
+			`CREATE VIRTUAL TABLE IF NOT EXISTS captures_fts USING fts5(description, content, content='captures', content_rowid='id')`,
+			`CREATE TRIGGER IF NOT EXISTS captures_ai AFTER INSERT ON captures BEGIN INSERT INTO captures_fts(rowid, description, content) VALUES (new.id, new.description, new.content); END`,
+			`CREATE TRIGGER IF NOT EXISTS captures_ad AFTER DELETE ON captures BEGIN INSERT INTO captures_fts(captures_fts, rowid, description, content) VALUES ('delete', old.id, old.description, old.content); END`,
+			`CREATE TRIGGER IF NOT EXISTS captures_au AFTER UPDATE ON captures BEGIN INSERT INTO captures_fts(captures_fts, rowid, description, content) VALUES ('delete', old.id, old.description, old.content); INSERT INTO captures_fts(rowid, description, content) VALUES (new.id, new.description, new.content); END`,
+		}
 
-	for _, stmt := range statements {
-		if _, err := tx.Exec(stmt); err != nil {
+		for _, stmt := range statements {
+			if _, err := tx.Exec(stmt); err != nil {
+				return err
+			}
+		}
+
+		if _, err := tx.Exec(`UPDATE schema_version SET version = 1`); err != nil {
 			return err
 		}
+		version = 1
 	}
 
-	if _, err := tx.Exec(`UPDATE schema_version SET version = 1`); err != nil {
-		return err
+	if version < 2 {
+		hasEndedAt, err := hasColumn(tx, "sessions", "ended_at")
+		if err != nil {
+			return err
+		}
+		if !hasEndedAt {
+			if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN ended_at TEXT NULL`); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`UPDATE schema_version SET version = 2`); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
@@ -698,7 +728,7 @@ func nextSeq(tx *sql.Tx, rootID string) (int, error) {
 
 func getCaptureByCallID(tx *sql.Tx, rootID, callID string) (*CaptureRecord, error) {
 	row := tx.QueryRow(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, s.deleted_at
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, s.deleted_at, s.ended_at
 		FROM captures c
 		JOIN sessions s ON s.id = c.session_id
 		WHERE c.session_id = ? AND c.call_id = ?
@@ -712,7 +742,7 @@ func getCaptureByCallID(tx *sql.Tx, rootID, callID string) (*CaptureRecord, erro
 
 func getCaptureByID(q interface{ QueryRow(string, ...any) *sql.Row }, id int64) (*CaptureRecord, error) {
 	row := q.QueryRow(`
-		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, s.deleted_at
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, s.deleted_at, s.ended_at
 		FROM captures c
 		JOIN sessions s ON s.id = c.session_id
 		WHERE c.id = ?
@@ -728,13 +758,14 @@ func scanCapture(s scanner, withContent bool) (*CaptureRecord, error) {
 	var source sql.NullString
 	var capturedAt string
 	var deletedAt sql.NullString
+	var endedAt sql.NullString
 
 	if withContent {
-		if err := s.Scan(&record.ID, &record.SessionID, &record.Seq, &child, &record.CallID, &record.Agent, &record.Description, &record.Preview, &record.Content, &record.Bytes, &source, &capturedAt, &deletedAt); err != nil {
+		if err := s.Scan(&record.ID, &record.SessionID, &record.Seq, &child, &record.CallID, &record.Agent, &record.Description, &record.Preview, &record.Content, &record.Bytes, &source, &capturedAt, &deletedAt, &endedAt); err != nil {
 			return nil, err
 		}
 	} else {
-		if err := s.Scan(&record.ID, &record.SessionID, &record.Seq, &child, &record.CallID, &record.Agent, &record.Description, &record.Preview, &record.Bytes, &source, &capturedAt, &deletedAt); err != nil {
+		if err := s.Scan(&record.ID, &record.SessionID, &record.Seq, &child, &record.CallID, &record.Agent, &record.Description, &record.Preview, &record.Bytes, &source, &capturedAt, &deletedAt, &endedAt); err != nil {
 			return nil, err
 		}
 	}
@@ -745,6 +776,10 @@ func scanCapture(s scanner, withContent bool) (*CaptureRecord, error) {
 	if deletedAt.Valid {
 		t := parseDBTime(deletedAt.String)
 		record.DeletedAt = &t
+	}
+	if endedAt.Valid {
+		t := parseDBTime(endedAt.String)
+		record.EndedAt = &t
 	}
 	return &record, nil
 }
@@ -757,9 +792,10 @@ func scanCaptureWithHighlight(s scanner) (*CaptureRecord, string, error) {
 	var source sql.NullString
 	var capturedAt string
 	var deletedAt sql.NullString
+	var endedAt sql.NullString
 	var contentHL string
 
-	if err := s.Scan(&record.ID, &record.SessionID, &record.Seq, &child, &record.CallID, &record.Agent, &record.Description, &record.Preview, &record.Bytes, &source, &capturedAt, &deletedAt, &contentHL); err != nil {
+	if err := s.Scan(&record.ID, &record.SessionID, &record.Seq, &child, &record.CallID, &record.Agent, &record.Description, &record.Preview, &record.Bytes, &source, &capturedAt, &deletedAt, &endedAt, &contentHL); err != nil {
 		return nil, "", err
 	}
 
@@ -770,7 +806,36 @@ func scanCaptureWithHighlight(s scanner) (*CaptureRecord, string, error) {
 		t := parseDBTime(deletedAt.String)
 		record.DeletedAt = &t
 	}
+	if endedAt.Valid {
+		t := parseDBTime(endedAt.String)
+		record.EndedAt = &t
+	}
 	return &record, contentHL, nil
+}
+
+func hasColumn(tx *sql.Tx, tableName, columnName string) (bool, error) {
+	rows, err := tx.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == columnName {
+			return true, nil
+		}
+	}
+
+	return false, rows.Err()
 }
 
 const (

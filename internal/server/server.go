@@ -66,7 +66,7 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	case "session.created":
 		err = s.store.EnsureSession(info.ID, info.ParentID)
 	case "session.deleted":
-		err = s.store.MarkSessionDeleted(info.ID)
+		err = s.store.MarkSessionEnded(info.ID)
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": true})
 		return

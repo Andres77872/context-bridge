@@ -396,10 +396,10 @@ func TestConfirmDeleteSessionAction(t *testing.T) {
 		t.Fatal("expected reload command after deletion")
 	}
 
-	// verify soft deletion
+	// verify deletion hides session from the active dashboard query
 	sessions, _ := st.ListRootSessions(10)
-	if len(sessions) != 1 || sessions[0].DeletedAt == nil {
-		t.Fatalf("expected session to be marked deleted")
+	if len(sessions) != 0 {
+		t.Fatalf("expected session to be hidden after delete, got %d", len(sessions))
 	}
 }
 

@@ -205,19 +205,16 @@ func TestHandleDeleteSessionSoftDeletesAndReturnsActionResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
-	if len(sessions) != 1 {
-		t.Fatalf("expected 1 session, got %d", len(sessions))
-	}
-	if sessions[0].DeletedAt == nil {
-		t.Fatal("expected session to be soft-deleted")
+	if len(sessions) != 0 {
+		t.Fatalf("expected deleted session to be hidden, got %d", len(sessions))
 	}
 
 	captures, err := st.ListCaptures("ses_delete", "")
 	if err != nil {
 		t.Fatalf("list captures: %v", err)
 	}
-	if len(captures) != 1 {
-		t.Fatalf("expected capture to remain after session delete, got %d", len(captures))
+	if len(captures) != 0 {
+		t.Fatalf("expected deleted session captures to be hidden, got %d", len(captures))
 	}
 }
 

@@ -184,6 +184,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		LastCapturedAt time.Time  `json:"last_captured_at"`
 		CaptureCount   int        `json:"capture_count"`
 		DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+		EndedAt        *time.Time `json:"ended_at,omitempty"`
 	}
 	items := make([]sessionItem, len(sessions))
 	for i, s := range sessions {
@@ -193,6 +194,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			LastCapturedAt: s.LastCapturedAt,
 			CaptureCount:   s.CaptureCount,
 			DeletedAt:      s.DeletedAt,
+			EndedAt:        s.EndedAt,
 		}
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -246,6 +248,7 @@ func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
 		Bytes          int        `json:"bytes"`
 		CapturedAt     time.Time  `json:"captured_at"`
 		DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+		EndedAt        *time.Time `json:"ended_at,omitempty"`
 	}
 
 	items := make([]captureListItem, len(captures))
@@ -261,6 +264,7 @@ func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
 			Bytes:          c.Bytes,
 			CapturedAt:     c.CapturedAt,
 			DeletedAt:      c.DeletedAt,
+			EndedAt:        c.EndedAt,
 		}
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -327,6 +331,7 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 		Bytes          int        `json:"bytes"`
 		CapturedAt     time.Time  `json:"captured_at"`
 		DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+		EndedAt        *time.Time `json:"ended_at,omitempty"`
 	}
 	writeJSON(w, http.StatusOK, captureDetail{
 		ID:             capture.ID,
@@ -340,6 +345,7 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 		Bytes:          capture.Bytes,
 		CapturedAt:     capture.CapturedAt,
 		DeletedAt:      capture.DeletedAt,
+		EndedAt:        capture.EndedAt,
 	})
 }
 
@@ -376,6 +382,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Bytes          int        `json:"bytes"`
 		CapturedAt     time.Time  `json:"captured_at"`
 		DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+		EndedAt        *time.Time `json:"ended_at,omitempty"`
 	}
 	type searchItem struct {
 		Capture    captureListItem `json:"capture"`
@@ -397,6 +404,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				Bytes:          r.Capture.Bytes,
 				CapturedAt:     r.Capture.CapturedAt,
 				DeletedAt:      r.Capture.DeletedAt,
+				EndedAt:        r.Capture.EndedAt,
 			},
 			Snippet:    r.Snippet,
 			MatchCount: r.MatchCount,

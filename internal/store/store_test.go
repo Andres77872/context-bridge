@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -499,7 +500,7 @@ func TestStatsReturnsAggregates(t *testing.T) {
 	}
 }
 
-func TestMarkSessionDeleted(t *testing.T) {
+func TestMarkSessionDeletedHidesSessionAndCaptures(t *testing.T) {
 	st := openTestStore(t)
 	now := time.Now().UTC()
 
@@ -530,16 +531,41 @@ func TestMarkSessionDeleted(t *testing.T) {
 		t.Fatalf("MarkSessionDeleted: %v", err)
 	}
 
-	// Should still be returned but with DeletedAt set
+	// Deleted root sessions should be hidden from listings.
 	sessionsAfter, err := st.ListRootSessions(10)
 	if err != nil {
 		t.Fatalf("ListRootSessions after delete: %v", err)
 	}
-	if len(sessionsAfter) != 1 {
-		t.Fatalf("expected session to still be returned, got %d", len(sessionsAfter))
+	if len(sessionsAfter) != 0 {
+		t.Fatalf("expected deleted session to be hidden, got %d", len(sessionsAfter))
 	}
-	if sessionsAfter[0].DeletedAt == nil {
-		t.Fatal("expected DeletedAt to be set")
+
+	captures, err := st.ListCaptures("ses-to-delete", "")
+	if err != nil {
+		t.Fatalf("ListCaptures after delete: %v", err)
+	}
+	if len(captures) != 0 {
+		t.Fatalf("expected deleted session captures to be hidden, got %d", len(captures))
+	}
+
+	if _, err := st.GetCaptureBySeq("ses-to-delete", 1); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected deleted session read to be hidden, got %v", err)
+	}
+
+	results, err := st.SearchWithMode("ses-to-delete", "test", 1, SearchModeRegex)
+	if err != nil {
+		t.Fatalf("SearchWithMode after delete: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected deleted session search to be hidden, got %d", len(results))
+	}
+
+	hint, err := st.RenderHint("ses-to-delete", SearchModeRegex)
+	if err != nil {
+		t.Fatalf("RenderHint after delete: %v", err)
+	}
+	if hint != "" {
+		t.Fatalf("expected deleted session hint to be empty, got %q", hint)
 	}
 
 	// Stats should exclude deleted sessions
@@ -550,6 +576,160 @@ func TestMarkSessionDeleted(t *testing.T) {
 	if stats.Sessions != 0 {
 		t.Fatalf("expected 0 active sessions in stats, got %d", stats.Sessions)
 	}
+}
+
+func TestMarkSessionEndedKeepsSessionVisibleAndAccessible(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC()
+
+	_, err := st.AddCapture(CaptureInput{
+		ParentSessionID: "ses-ended",
+		ChildSessionID:  "ses-child",
+		CallID:          "call-1",
+		Agent:           "grep",
+		Description:     "test",
+		Content:         "needle content",
+		CapturedAt:      now,
+	})
+	if err != nil {
+		t.Fatalf("AddCapture: %v", err)
+	}
+
+	if err := st.MarkSessionEnded("ses-ended"); err != nil {
+		t.Fatalf("MarkSessionEnded: %v", err)
+	}
+
+	sessions, err := st.ListRootSessions(10)
+	if err != nil {
+		t.Fatalf("ListRootSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected ended session to stay visible, got %d", len(sessions))
+	}
+	if sessions[0].EndedAt == nil {
+		t.Fatal("expected EndedAt to be set")
+	}
+	if sessions[0].DeletedAt != nil {
+		t.Fatal("expected DeletedAt to remain nil")
+	}
+
+	captures, err := st.ListCaptures("ses-child", "")
+	if err != nil {
+		t.Fatalf("ListCaptures: %v", err)
+	}
+	if len(captures) != 1 {
+		t.Fatalf("expected ended session captures to remain accessible, got %d", len(captures))
+	}
+	if captures[0].EndedAt == nil {
+		t.Fatal("expected capture EndedAt to be populated")
+	}
+
+	hint, err := st.RenderHint("ses-child", SearchModeRegex)
+	if err != nil {
+		t.Fatalf("RenderHint: %v", err)
+	}
+	if !strings.Contains(hint, "[#1] [grep] test") {
+		t.Fatalf("expected ended session hint to remain available, got %q", hint)
+	}
+}
+
+func TestOpenMigratesExistingSchemaToEndedAt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "migrate.db")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_time_format=sqlite")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	stmts := []string{
+		`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
+		`INSERT INTO schema_version (version) VALUES (1)`,
+		`CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			parent_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			deleted_at TEXT NULL
+		)`,
+		`CREATE TABLE captures (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id),
+			seq INTEGER NOT NULL,
+			child_session_id TEXT NULL,
+			call_id TEXT NOT NULL,
+			agent TEXT NOT NULL DEFAULT 'unknown',
+			description TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL,
+			preview TEXT NOT NULL DEFAULT '',
+			bytes INTEGER NOT NULL DEFAULT 0,
+			source_path TEXT NULL,
+			captured_at TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(session_id, seq),
+			UNIQUE(session_id, call_id)
+		)`,
+		`CREATE INDEX idx_captures_session ON captures(session_id, seq)`,
+		`CREATE INDEX idx_captures_agent ON captures(session_id, agent)`,
+		`CREATE INDEX idx_sessions_parent ON sessions(parent_id)`,
+		`CREATE VIRTUAL TABLE captures_fts USING fts5(description, content, content='captures', content_rowid='id')`,
+		`CREATE TRIGGER captures_ai AFTER INSERT ON captures BEGIN INSERT INTO captures_fts(rowid, description, content) VALUES (new.id, new.description, new.content); END`,
+		`CREATE TRIGGER captures_ad AFTER DELETE ON captures BEGIN INSERT INTO captures_fts(captures_fts, rowid, description, content) VALUES ('delete', old.id, old.description, old.content); END`,
+		`CREATE TRIGGER captures_au AFTER UPDATE ON captures BEGIN INSERT INTO captures_fts(captures_fts, rowid, description, content) VALUES ('delete', old.id, old.description, old.content); INSERT INTO captures_fts(rowid, description, content) VALUES (new.id, new.description, new.content); END`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			t.Fatalf("seed old schema: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close old db: %v", err)
+	}
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open migrated db: %v", err)
+	}
+	defer st.Close()
+
+	var version int
+	if err := st.db.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", currentSchemaVersion, version)
+	}
+
+	hasEndedAt, err := testHasColumn(st.db, "sessions", "ended_at")
+	if err != nil {
+		t.Fatalf("hasColumn ended_at: %v", err)
+	}
+	if !hasEndedAt {
+		t.Fatal("expected ended_at column after migration")
+	}
+}
+
+func testHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + tableName + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == columnName {
+			return true, nil
+		}
+	}
+
+	return false, rows.Err()
 }
 
 func TestDeleteCapture(t *testing.T) {

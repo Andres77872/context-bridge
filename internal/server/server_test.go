@@ -57,7 +57,7 @@ func TestSessionCreatedEventLinksChildToRoot(t *testing.T) {
 	}
 }
 
-func TestSessionDeletedEventMarksSessionDeleted(t *testing.T) {
+func TestSessionDeletedEventMarksSessionEnded(t *testing.T) {
 	st := openTestStore(t)
 	srv := New(st, store.SearchModeRegex)
 
@@ -82,8 +82,11 @@ func TestSessionDeletedEventMarksSessionDeleted(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(sessions))
 	}
-	if sessions[0].DeletedAt == nil {
-		t.Fatal("expected deleted_at to be set")
+	if sessions[0].EndedAt == nil {
+		t.Fatal("expected ended_at to be set")
+	}
+	if sessions[0].DeletedAt != nil {
+		t.Fatal("expected deleted_at to remain nil")
 	}
 }
 

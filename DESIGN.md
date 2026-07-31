@@ -518,6 +518,25 @@ Whitespace-only path variables are treated as unset. Every effective config, dat
 Location: `plugin/opencode/context-bridge.ts`  
 Installed to: `~/.config/opencode/plugins/context-bridge.ts`
 
+### Module shape: one file, two plugin runtimes
+
+OpenCode loads plugins through two systems that glob the same `{plugin,plugins}/*.{ts,js}` directories. The adapter default-exports a shape both accept:
+
+```ts
+export default { id: "context-bridge", setup, server }
+```
+
+| Loader | Reads | Status |
+|---|---|---|
+| V1 — `packages/opencode/src/plugin` via `readV1Plugin` | `id` + `server()` returning `Hooks` | Authoritative today |
+| V2 — `packages/core/src/config/plugin/external.ts` via the `PluginModule` schema | `id` + `setup(context)` | Adopted, inert until its domains land |
+
+The published V2 context (`@opencode-ai/plugin/v2/promise`) offers `agent`, `aisdk`, `catalog`, `command`, `integration`, `reference`, and `skill`. Capture requires the `tool` and `event` domains, which `packages/plugin/src/v2/effect/PLAN.md` lists as agreed design (`ctx.tool.hook("execute.after")`, `ctx.event.subscribe(...)`) but which the runtime does not implement. There is no V2 equivalent for MCP registration or the system-prompt transform at all.
+
+`setup` therefore feature-detects those domains. It installs the capture hook and the session-event subscription the moment they appear, and returns without side effects when they are missing. **Ownership is single-writer**: `setup` sets `v2OwnsCapture` only after `ctx.tool.hook("execute.after")` registers successfully, and both V1 capture paths (`event`, `tool.execute.after`) return early when that flag is set. A runtime exposing a partial tool domain therefore never silences V1.
+
+Capture, lineage sync, hint retrieval, and bounding live in one runtime-agnostic core shared by both paths, so the two runtimes cannot drift in behaviour.
+
 ### Runtime contract
 
 - `config`: inject a local MCP entry only when absent; respect explicit disable; preserve equivalent entries; warn and leave conflicts untouched.

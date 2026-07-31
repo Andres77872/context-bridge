@@ -832,16 +832,27 @@ The plugin at `~/.config/opencode/plugins/context-bridge.ts` is intentionally bo
 - No search logic
 - No OpenCode config-file mutation
 
-### Hooks
+### Plugin runtimes (V1 and V2)
 
-| Hook | Purpose |
-|------|---------|
-| `config` | Register MCP in memory while respecting disabled/equivalent/conflicting entries |
-| `session.created` | Register new session in store |
-| `session.deleted` | Mark the session as ended; captures remain retained and queryable |
-| `tool.execute.before` | Force Context Bridge MCP calls to the active session ID |
-| `tool.execute.after` | Capture bounded foreground Task outputs and repair child lineage |
-| `experimental.chat.system.transform` | Inject one bounded, opaque output-number index per session |
+OpenCode ships two plugin systems. The adapter is a **dual-runtime module** so one installed file satisfies both loaders:
+
+```ts
+export default { id: "context-bridge", setup, server }
+```
+
+- **V2** (`@opencode-ai/plugin/v2/promise`) reads `id` + `setup`. The published V2 context exposes `agent`, `aisdk`, `catalog`, `command`, `integration`, `reference`, and `skill`. Capture needs the `tool` and `event` domains, which the V2 plan lists as agreed design but the runtime does not implement yet. `setup` feature-detects them: it registers the capture hook and session-event subscription the moment they exist, and stays inert until then.
+- **V1** (`@opencode-ai/plugin`) reads `id` + `server`. It remains the pipeline that actually captures today, and it is the only one that can register the MCP server and transform the system prompt.
+
+Both runtimes drive the same capture logic; only the wiring differs. Ownership never overlaps: V2 claims capture only after its tool hook is installed, and every V1 capture path checks that flag first, so nothing is ever recorded twice.
+
+| Hook | Runtime | Purpose |
+|------|---------|---------|
+| `config` | V1 | Register MCP in memory while respecting disabled/equivalent/conflicting entries |
+| `session.created` | V1, V2 when `event` lands | Register new session in store |
+| `session.deleted` | V1, V2 when `event` lands | Mark the session as ended; captures remain retained and queryable |
+| `tool.execute.before` | V1 | Force Context Bridge MCP calls to the active session ID |
+| `tool.execute.after` | V1, V2 when `tool` lands | Capture bounded foreground Task outputs and repair child lineage |
+| `experimental.chat.system.transform` | V1 | Inject one bounded, opaque output-number index per session |
 
 ### Auto-spawn behavior
 

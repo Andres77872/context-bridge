@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import type { PluginContext as PluginContextV2 } from "@opencode-ai/plugin/v2/promise";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
@@ -60,6 +61,7 @@ const CONTEXT_BRIDGE_TOOLS = new Set([
   "context-bridge_read",
   "context-bridge_search",
 ]);
+const TASK_TOOLS = new Set(["task", "Task"]);
 
 let spawnInFlight: Promise<void> | null = null;
 
@@ -248,60 +250,284 @@ function boundedCapture(content: string): string {
   return boundedUTF8(content, MAX_CAPTURE_BYTES, TRUNCATION_MARKER);
 }
 
+// ── shared runtime core ─────────────────────────────────────────────────────
+//
+// Every behaviour below is expressed against plain data so the V1 hook pipeline
+// and the V2 plugin runtime drive identical logic. Only the wiring differs.
+
+let warnedIncompatibleBridge = false;
+
+async function ensureCompatibleBridge(deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS): Promise<boolean> {
+  const probe = await probeBridge(deadline);
+  if (probe === "incompatible") {
+    if (!warnedIncompatibleBridge) {
+      warnedIncompatibleBridge = true;
+      console.warn(`[context-bridge] ${BRIDGE_SOCKET} is occupied by an incompatible service; capture is disabled.`);
+    }
+    return false;
+  }
+  return ensureBridge(probe, deadline);
+}
+
+/** Resolves a session's parent chain, newest first. */
+type SessionLookup = (sessionID: string, deadline: number) => Promise<{ id: string; parentID: string } | null>;
+
+/**
+ * Registers the session and every ancestor with the backend so captures always
+ * attach to the root of the tree, no matter which nested subagent produced them.
+ */
+async function syncSessionLineage(
+  sessionID: string,
+  deadline: number,
+  lookup: SessionLookup,
+): Promise<boolean> {
+  const chain: Array<{ id: string; parentID: string }> = [];
+  const seen = new Set<string>();
+  let currentID = sessionID;
+
+  for (let depth = 0; depth < 64; depth++) {
+    if (Date.now() >= deadline) return false;
+    if (seen.has(currentID)) return false;
+    seen.add(currentID);
+    const info = await lookup(currentID, deadline);
+    if (!info) return false;
+    chain.push(info);
+    if (!info.parentID) break;
+    currentID = info.parentID;
+    if (depth === 63) return false;
+  }
+
+  for (const info of chain.reverse()) {
+    const result = await bridgeFetch("/events", {
+      method: "POST",
+      body: JSON.stringify({ type: "session.created", properties: { info } }),
+    }, REQUEST_TIMEOUT_MS, deadline);
+    if (result?.ok !== true) return false;
+  }
+  return true;
+}
+
+/** Identity of the tool call that produced an output. */
+type TaskIdentity = {
+  sessionID: string;
+  callID: string;
+};
+
+/** The bounded payload persisted for one finished subagent. */
+type CapturedTask = {
+  agent: string;
+  description: string;
+  content: string;
+  childSessionID: string;
+};
+
+/**
+ * Normalises a finished tool call into a capture payload, or null when it is
+ * not a foreground subagent result worth persisting. Background tasks are
+ * skipped because their tool output is a placeholder; the real result arrives
+ * later as a synthetic message that never reaches this boundary.
+ */
+function readCompletedTask(tool: string, args: any, output: any): CapturedTask | null {
+  if (!TASK_TOOLS.has(tool)) return null;
+  if (output?.metadata?.background === true) return null;
+
+  const agent = args?.subagent_type ?? args?.subagentType;
+  const content = extractOutputText(output);
+  if (typeof agent !== "string" || !content || content.trim().length === 0) return null;
+
+  return {
+    agent: boundedUTF8(agent, MAX_AGENT_BYTES, "…"),
+    description:
+      typeof args?.description === "string" ? boundedUTF8(args.description, MAX_DESCRIPTION_BYTES, "…") : "",
+    content: boundedCapture(content),
+    childSessionID: typeof output?.metadata?.sessionId === "string" ? output.metadata.sessionId : "",
+  };
+}
+
+/** Persists one finished subagent output through the backend capture endpoint. */
+async function captureCompletedTask(
+  identity: TaskIdentity,
+  task: CapturedTask,
+  lookup: SessionLookup,
+): Promise<void> {
+  if (!identity.sessionID) return;
+  const deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS;
+  if (!(await ensureCompatibleBridge(deadline))) return;
+  if (!(await syncSessionLineage(identity.sessionID, deadline, lookup))) return;
+
+  if (task.childSessionID) {
+    const linked = await bridgeFetch(
+      "/events",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          type: "session.created",
+          properties: { info: { id: task.childSessionID, parentID: identity.sessionID } },
+        }),
+      },
+      REQUEST_TIMEOUT_MS,
+      deadline,
+    );
+    if (linked?.ok !== true) return;
+  }
+
+  await bridgeFetch(
+    "/capture",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        parent_session_id: identity.sessionID,
+        child_session_id: task.childSessionID,
+        call_id: identity.callID,
+        agent: task.agent,
+        description: task.description,
+        content: task.content,
+        captured_at: new Date().toISOString(),
+      }),
+    },
+    REQUEST_TIMEOUT_MS,
+    deadline,
+  );
+}
+
+/** Forwards a session lifecycle event to the backend. */
+async function forwardSessionEvent(event: unknown): Promise<void> {
+  const deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS;
+  if (!(await ensureCompatibleBridge(deadline))) return;
+  await bridgeFetch("/events", { method: "POST", body: JSON.stringify(event) }, REQUEST_TIMEOUT_MS, deadline);
+}
+
+/** Fetches the bounded hint appended to a session's system prompt. */
+async function fetchHint(sessionID: string): Promise<string | null> {
+  const deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS;
+  if (!(await ensureCompatibleBridge(deadline))) return null;
+
+  const res = await bridgeFetch(
+    `/hint?session_id=${encodeURIComponent(sessionID)}`,
+    { method: "GET" },
+    REQUEST_TIMEOUT_MS,
+    deadline,
+  );
+  const rawHint = res?.text;
+  if (typeof rawHint !== "string" || rawHint.length === 0) return null;
+  return boundedUTF8(rawHint, MAX_HINT_BYTES, HINT_TRUNCATION_MARKER);
+}
+
+// ── V2 runtime ──────────────────────────────────────────────────────────────
+//
+// The published V2 context (`@opencode-ai/plugin/v2/promise`) exposes agent,
+// aisdk, catalog, command, integration, reference, and skill. Capture needs the
+// tool and event domains, which the V2 plan lists as agreed but which the
+// runtime does not implement yet. The types below describe only what this
+// plugin consumes; setup feature-detects them and stays inert until they land,
+// leaving the V1 pipeline authoritative. When a runtime does provide them, V2
+// takes ownership and the V1 hooks stand down so nothing runs twice.
+
+type V2ToolEvent = {
+  readonly tool?: string;
+  readonly sessionID?: string;
+  readonly callID?: string;
+  readonly args?: any;
+  readonly output?: any;
+};
+
+type V2SessionEvent = {
+  readonly type?: string;
+  readonly properties?: unknown;
+};
+
+type V2FutureDomains = {
+  readonly tool?: {
+    readonly hook?: (
+      name: "execute.before" | "execute.after",
+      callback: (event: V2ToolEvent) => Promise<void> | void,
+    ) => Promise<unknown>;
+  };
+  readonly event?: {
+    readonly subscribe?: (type: string) => AsyncIterable<V2SessionEvent> | undefined;
+  };
+};
+
+let v2OwnsCapture = false;
+
+// The V2 context has no session API, so lineage is limited to the pair the tool
+// event carries. Reporting an empty parent is safe rather than lossy: the
+// backend never demotes a session that already has a parent, and the child edge
+// is registered separately before the capture is posted, so the root still
+// resolves correctly for nested subagents.
+const v2SessionLookup: SessionLookup = async (sessionID) => ({ id: sessionID, parentID: "" });
+
+async function registerV2Capture(domains: V2FutureDomains): Promise<boolean> {
+  const hook = domains.tool?.hook;
+  if (typeof hook !== "function") return false;
+
+  await hook("execute.after", async (event) => {
+    const tool = typeof event?.tool === "string" ? event.tool : "";
+    const task = readCompletedTask(tool, event?.args, event?.output);
+    if (!task) return;
+    const sessionID = typeof event?.sessionID === "string" ? event.sessionID : "";
+    if (!sessionID) return;
+    await captureCompletedTask(
+      { sessionID, callID: typeof event?.callID === "string" ? event.callID : "" },
+      task,
+      v2SessionLookup,
+    );
+  });
+  return true;
+}
+
+async function registerV2Events(domains: V2FutureDomains): Promise<void> {
+  const subscribe = domains.event?.subscribe;
+  if (typeof subscribe !== "function") return;
+
+  for (const type of ["session.created", "session.deleted"]) {
+    const stream = subscribe(type);
+    if (!stream || typeof (stream as any)[Symbol.asyncIterator] !== "function") continue;
+    void (async () => {
+      try {
+        for await (const event of stream) await forwardSessionEvent(event);
+      } catch {
+        // A closed stream ends the subscription; capture is unaffected.
+      }
+    })();
+  }
+}
+
+const setup = async (context: PluginContextV2): Promise<void> => {
+  const domains = context as PluginContextV2 & V2FutureDomains;
+  if (!(await registerV2Capture(domains))) return;
+
+  // Ownership flips only after the capture hook is installed, so a runtime that
+  // exposes a partial tool domain never silences the V1 pipeline.
+  v2OwnsCapture = true;
+  await registerV2Events(domains);
+};
+
+// ── V1 runtime ──────────────────────────────────────────────────────────────
+//
+// Still the only pipeline that can register the MCP server, bind the session ID
+// onto Context Bridge tool calls, capture subagent output, and append the hint
+// to the system prompt.
+
 const server: Plugin = async (pluginInput) => {
   let bindMcpSession = false;
   let warnedMcpConflict = false;
-  let warnedIncompatibleBridge = false;
 
-  const ensureCompatibleBridge = async (deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS): Promise<boolean> => {
-    const probe = await probeBridge(deadline);
-    if (probe === "incompatible") {
-      if (!warnedIncompatibleBridge) {
-        warnedIncompatibleBridge = true;
-        console.warn(`[context-bridge] ${BRIDGE_SOCKET} is occupied by an incompatible service; capture is disabled.`);
-      }
-      return false;
+  const lookup: SessionLookup = async (sessionID, deadline) => {
+    try {
+      const response = await settleBefore(
+        pluginInput.client.session.get({
+          path: { id: sessionID },
+          query: { directory: pluginInput.directory },
+        }),
+        deadline,
+      );
+      const info = response.data;
+      if (!info || typeof info.id !== "string") return null;
+      return { id: info.id, parentID: typeof info.parentID === "string" ? info.parentID : "" };
+    } catch {
+      return null;
     }
-    return ensureBridge(probe, deadline);
-  };
-
-  const syncSessionLineage = async (sessionID: string, deadline: number): Promise<boolean> => {
-    const chain: Array<{ id: string; parentID: string }> = [];
-    const seen = new Set<string>();
-    let currentID = sessionID;
-
-    for (let depth = 0; depth < 64; depth++) {
-      if (Date.now() >= deadline) return false;
-      if (seen.has(currentID)) return false;
-      seen.add(currentID);
-      try {
-        const response = await settleBefore(
-          pluginInput.client.session.get({
-            path: { id: currentID },
-            query: { directory: pluginInput.directory },
-          }),
-          deadline,
-        );
-        const info = response.data;
-        if (!info || typeof info.id !== "string") return false;
-        const parentID = typeof info.parentID === "string" ? info.parentID : "";
-        chain.push({ id: info.id, parentID });
-        if (!parentID) break;
-        currentID = parentID;
-      } catch {
-        return false;
-      }
-      if (depth === 63) return false;
-    }
-
-    for (const info of chain.reverse()) {
-      const result = await bridgeFetch("/events", {
-        method: "POST",
-        body: JSON.stringify({ type: "session.created", properties: { info } }),
-      }, REQUEST_TIMEOUT_MS, deadline);
-      if (result?.ok !== true) return false;
-    }
-    return true;
   };
 
   return {
@@ -336,10 +562,9 @@ const server: Plugin = async (pluginInput) => {
     },
 
     event: async ({ event }) => {
+      if (v2OwnsCapture) return;
       if (event.type !== "session.created" && event.type !== "session.deleted") return;
-      const deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS;
-      if (!(await ensureCompatibleBridge(deadline))) return;
-      await bridgeFetch("/events", { method: "POST", body: JSON.stringify(event) }, REQUEST_TIMEOUT_MS, deadline);
+      await forwardSessionEvent(event);
     },
 
     "tool.execute.before": async (hookInput, output) => {
@@ -351,70 +576,17 @@ const server: Plugin = async (pluginInput) => {
     },
 
     "tool.execute.after": async (hookInput, output) => {
-      if (hookInput.tool !== "Task" && hookInput.tool !== "task") return;
-      if (output?.metadata?.background === true) return;
-
-      const agent = hookInput.args?.subagent_type ?? hookInput.args?.subagentType;
-      const rawContent = extractOutputText(output);
-      if (typeof agent !== "string" || !rawContent || rawContent.trim().length === 0 || !hookInput.sessionID) return;
-      const deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS;
-      if (!(await ensureCompatibleBridge(deadline))) return;
-      if (!(await syncSessionLineage(hookInput.sessionID, deadline))) return;
-
-      const childSessionID = typeof output?.metadata?.sessionId === "string" ? output.metadata.sessionId : "";
-      if (childSessionID) {
-        const linked = await bridgeFetch(
-          "/events",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              type: "session.created",
-              properties: { info: { id: childSessionID, parentID: hookInput.sessionID } },
-            }),
-          },
-          REQUEST_TIMEOUT_MS,
-          deadline,
-        );
-        if (linked?.ok !== true) return;
-      }
-
-      await bridgeFetch(
-        "/capture",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            parent_session_id: hookInput.sessionID,
-            child_session_id: childSessionID,
-            call_id: hookInput.callID,
-            agent: boundedUTF8(agent, MAX_AGENT_BYTES, "…"),
-            description:
-              typeof hookInput.args?.description === "string"
-                ? boundedUTF8(hookInput.args.description, MAX_DESCRIPTION_BYTES, "…")
-                : "",
-            content: boundedCapture(rawContent),
-            captured_at: new Date().toISOString(),
-          }),
-        },
-        REQUEST_TIMEOUT_MS,
-        deadline,
-      );
+      if (v2OwnsCapture) return;
+      const task = readCompletedTask(hookInput.tool, hookInput.args, output);
+      if (!task || !hookInput.sessionID) return;
+      await captureCompletedTask({ sessionID: hookInput.sessionID, callID: hookInput.callID }, task, lookup);
     },
 
     "experimental.chat.system.transform": async (hookInput, output) => {
       if (!bindMcpSession) return;
       if (!hookInput.sessionID) return;
-      const deadline = Date.now() + HOOK_PIPELINE_TIMEOUT_MS;
-      if (!(await ensureCompatibleBridge(deadline))) return;
-
-      const res = await bridgeFetch(
-        `/hint?session_id=${encodeURIComponent(hookInput.sessionID)}`,
-        { method: "GET" },
-        REQUEST_TIMEOUT_MS,
-        deadline,
-      );
-      const rawHint = res?.text;
-      if (typeof rawHint !== "string" || rawHint.length === 0) return;
-      const hint = boundedUTF8(rawHint, MAX_HINT_BYTES, HINT_TRUNCATION_MARKER);
+      const hint = await fetchHint(hookInput.sessionID);
+      if (!hint) return;
 
       if (output.system.length > 0) {
         output.system[output.system.length - 1] += `\n\n${hint}`;
@@ -427,7 +599,8 @@ const server: Plugin = async (pluginInput) => {
 
 export default {
   id: "context-bridge",
+  setup,
   server,
 };
 
-export { server as ContextBridge };
+export { server as ContextBridge, setup as ContextBridgeSetup };

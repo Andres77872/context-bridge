@@ -74,6 +74,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case analyticsLoadedMsg:
+		if msg.err == nil {
+			m.analytics = msg.analytics
+			m.analyticsLoaded = true
+		}
+		return m, nil
+
 	case sessionLoadedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -97,6 +104,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectedCapture = msg.record
+		m.captureAgentView = msg.agentView
+		m.captureRaw = false
 		m.rightPanel = PanelCaptureDetail
 		m.focus = FocusCaptureDetail
 		m.syncComponentSize()
@@ -124,39 +133,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchScope = msg.sessionID
 		m.searchQuery = msg.query
 		m.searchResults = msg.results
-
-		var rawOutput string
-		if len(msg.results) == 0 {
-			rawOutput = fmt.Sprintf("No matches for %q across %d outputs.", msg.query, msg.totalCaptures)
-		} else {
-			var groups []string
-			totalMatches := 0
-			for _, result := range msg.results {
-				totalMatches += result.MatchCount
-				groups = append(groups, strings.Join([]string{
-					fmt.Sprintf("### #%d [%s] %s", result.Capture.Seq, result.Capture.Agent, result.Capture.Description),
-					fmt.Sprintf("%d match(es)", result.MatchCount),
-					"",
-					result.Snippet,
-				}, "\n"))
-			}
-			rawOutput = strings.Join([]string{
-				fmt.Sprintf("## Search: %q", msg.query),
-				"",
-				fmt.Sprintf("%d match(es) across %d outputs.", totalMatches, len(msg.results)),
-				fmt.Sprintf("Use `read` with `session_id=%q` and the output # to read full content.", msg.rootID),
-				"",
-				strings.Join(groups, "\n\n"),
-			}, "\n")
-		}
-
-		m.searchRawOutput = rawOutput
+		m.searchRawOutput = renderSearchOutput(msg)
 		m.searchCursor = 0
 		m.searchResultsScroll = 0
 		m.rightPanel = PanelSearchResults
 		m.focus = FocusSearchResults
 		m.searchErr = ""
-		m.setStatus(fmt.Sprintf("Found %d result(s) for %q", len(msg.results), msg.query))
+		scopeLabel := truncateID(msg.sessionID, 16)
+		if msg.allSessions {
+			scopeLabel = "all sessions"
+		}
+		m.setStatus(fmt.Sprintf("Found %d result(s) for %q in %s", len(msg.results), msg.query, scopeLabel))
 		m.syncComponentSize()
 		m.contentViewport.GotoTop()
 		return m, nil
@@ -285,6 +272,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func searchScopeStatus(allSessions bool) string {
+	if allSessions {
+		return "Search scope: all live sessions"
+	}
+	return "Search scope: selected session"
+}
+
 func (m Model) focusFromRightPanel() FocusPane {
 	switch m.rightPanel {
 	case PanelCaptures:
@@ -388,7 +382,7 @@ func (m Model) updateSessionKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = true
 		m.prevPanel = PanelCaptures
-		return m, tea.Batch(loadCaptureCmd(m.store, m.selectedSession, selected.Seq), m.spinner.Tick)
+		return m, tea.Batch(loadCaptureCmd(m.store, m.selectedSession, selected.Seq, m.searchMode), m.spinner.Tick)
 	case "/":
 		m.activateFilter()
 		return m, nil
@@ -424,6 +418,16 @@ func (m Model) updateCaptureKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "s":
 		return m.openSearchFromCurrentSelection()
+	case "r":
+		m.captureRaw = !m.captureRaw
+		m.syncComponentSize()
+		m.contentViewport.GotoTop()
+		if m.captureRaw {
+			m.setStatus("Showing the stored document")
+		} else {
+			m.setStatus("Showing the agent view: the exact MCP read payload")
+		}
+		return m, nil
 	case "home":
 		m.contentViewport.GotoTop()
 		return m, nil
@@ -434,10 +438,58 @@ func (m Model) updateCaptureKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, vpCmd
 }
 
+// renderSearchOutput turns search results into the scrollable report shown in
+// the results panel. Cross-session searches label every hit with its session so
+// results stay attributable.
+func renderSearchOutput(msg searchLoadedMsg) string {
+	scope := fmt.Sprintf("session %s", truncateID(msg.rootID, 24))
+	if msg.allSessions {
+		scope = "all live sessions"
+	}
+
+	if len(msg.results) == 0 {
+		return fmt.Sprintf("No matches for %q in %s (%d outputs searched).", msg.query, scope, msg.totalCaptures)
+	}
+
+	groups := make([]string, 0, len(msg.results))
+	totalMatches := 0
+	for _, result := range msg.results {
+		totalMatches += result.MatchCount
+		header := fmt.Sprintf("### #%d [%s] %s", result.Capture.Seq, result.Capture.Agent, result.Capture.Description)
+		if msg.allSessions {
+			header = fmt.Sprintf("### %s #%d [%s] %s", truncateID(result.Capture.SessionID, 20), result.Capture.Seq, result.Capture.Agent, result.Capture.Description)
+		}
+		groups = append(groups, strings.Join([]string{
+			header,
+			fmt.Sprintf("%d match(es) · %s · %s", result.MatchCount, store.FormatBytes(result.Capture.Bytes), store.FormatRelativeTime(result.Capture.CapturedAt)),
+			"",
+			result.Snippet,
+		}, "\n"))
+	}
+
+	readHint := fmt.Sprintf("Use `read` with `session_id=%q` and the output # to read full content.", msg.rootID)
+	if msg.allSessions {
+		readHint = "Use `read` with the session id printed above each result and the output # to read full content."
+	}
+
+	return strings.Join([]string{
+		fmt.Sprintf("## Search: %q", msg.query),
+		"",
+		fmt.Sprintf("%d match(es) across %d outputs in %s.", totalMatches, len(msg.results), scope),
+		readHint,
+		"",
+		strings.Join(groups, "\n\n"),
+	}, "\n")
+}
+
 // --- Search input keys ---
 
 func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
+	case "ctrl+g":
+		m.searchAllSessions = !m.searchAllSessions
+		m.setStatus(searchScopeStatus(m.searchAllSessions))
+		return m, nil
 	case "esc":
 		if m.searchInput.Value() != "" {
 			m.searchInput.SetValue("")
@@ -458,11 +510,15 @@ func (m Model) handleSearchInputKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchErr = "Query is required"
 			return m, nil
 		}
+		if !m.searchAllSessions && strings.TrimSpace(m.searchScope) == "" {
+			m.searchErr = "Select a session, or press ctrl+g to search all sessions"
+			return m, nil
+		}
 		m.loading = true
 		m.searchErr = ""
 		m.searchQuery = query
 		m.searchInput.Blur()
-		return m, tea.Batch(loadSearchCmd(m.store, m.searchScope, query, m.searchMode), m.spinner.Tick)
+		return m, tea.Batch(loadSearchCmd(m.store, m.searchScope, query, m.searchMode, m.searchAllSessions), m.spinner.Tick)
 	}
 	var cmd tea.Cmd
 	m.searchInput, cmd = m.searchInput.Update(key)
@@ -514,6 +570,17 @@ func (m Model) updateSearchResultsKeys(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.contentViewport, vpCmd = m.contentViewport.Update(key)
 
 	switch key.String() {
+	case "ctrl+g":
+		m.searchAllSessions = !m.searchAllSessions
+		m.setStatus(searchScopeStatus(m.searchAllSessions))
+		if strings.TrimSpace(m.searchQuery) == "" {
+			return m, nil
+		}
+		if !m.searchAllSessions && strings.TrimSpace(m.searchScope) == "" {
+			return m, nil
+		}
+		m.loading = true
+		return m, tea.Batch(loadSearchCmd(m.store, m.searchScope, m.searchQuery, m.searchMode, m.searchAllSessions), m.spinner.Tick)
 	case "q", "esc", "left", "h":
 		m.rightPanel = m.searchOrigin
 		m.focus = m.searchOriginFoc
@@ -583,7 +650,7 @@ func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
 					m.focus = FocusSessions
 					m.sessionCaptures = nil
 				}
-				cmd = tea.Batch(loadDashboardCmd(m.store), loadStatsCmd(m.store))
+				cmd = tea.Batch(loadDashboardCmd(m.store), loadStatsCmd(m.store), loadAnalyticsCmd(m.store))
 			}
 		}
 	case confirmDeleteCapture:
@@ -594,7 +661,7 @@ func (m Model) executeConfirmAction() (tea.Model, tea.Cmd) {
 				m.setError(err)
 			} else {
 				m.setStatus(fmt.Sprintf("Deleted output #%d", selected.Seq))
-				cmd = tea.Batch(loadSessionCmd(m.store, selected.SessionID), loadDashboardCmd(m.store), loadStatsCmd(m.store))
+				cmd = tea.Batch(loadSessionCmd(m.store, selected.SessionID), loadDashboardCmd(m.store), loadStatsCmd(m.store), loadAnalyticsCmd(m.store))
 			}
 		}
 	}
@@ -621,9 +688,10 @@ func (m Model) openSearchFromCurrentSelection() (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// With no session in hand, fall back to a cross-session search rather than
+	// refusing to open the panel.
 	if scope == "" {
-		m.setStatus("Select a session before searching")
-		return m, nil
+		m.searchAllSessions = true
 	}
 
 	m.searchScope = scope

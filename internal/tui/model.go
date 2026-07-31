@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"context-bridge/internal/config"
+	"context-bridge/internal/mcp"
 	"context-bridge/internal/store"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -14,7 +16,11 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 )
 
-const dashboardLimit = 100
+const (
+	dashboardLimit = 100
+	// overviewWindowDays is the activity window summarised on the overview tab.
+	overviewWindowDays = 14
+)
 
 type Tab int
 
@@ -79,6 +85,10 @@ type Model struct {
 	// Stats loaded once at Init.
 	stats store.StoreStats
 
+	// Usage aggregates powering the overview tab.
+	analytics       store.Analytics
+	analyticsLoaded bool
+
 	// Dashboard screen state.
 	dashboardSessions []store.SessionSummary
 	dashboardCursor   int
@@ -98,10 +108,17 @@ type Model struct {
 	// Capture screen state.
 	selectedCapture *store.CaptureRecord
 	contentViewport viewport.Model
+	// captureAgentView holds the exact MCP `read` payload for the selected
+	// capture; captureRaw switches the pane to the stored document instead.
+	captureAgentView string
+	captureRaw       bool
 
 	// Search screen state.
-	searchInput         textinput.Model
-	searchScope         string
+	searchInput textinput.Model
+	searchScope string
+	// searchAllSessions widens the next search to every live session instead
+	// of the selected one.
+	searchAllSessions   bool
 	searchResults       []store.SearchResult
 	searchRawOutput     string
 	searchCursor        int
@@ -143,8 +160,9 @@ type sessionLoadedMsg struct {
 }
 
 type captureLoadedMsg struct {
-	record *store.CaptureRecord
-	err    error
+	record    *store.CaptureRecord
+	agentView string
+	err       error
 }
 
 type searchLoadedMsg struct {
@@ -153,7 +171,13 @@ type searchLoadedMsg struct {
 	totalCaptures int
 	query         string
 	results       []store.SearchResult
+	allSessions   bool
 	err           error
+}
+
+type analyticsLoadedMsg struct {
+	analytics store.Analytics
+	err       error
 }
 
 // New initialises the TUI model. The search input starts unfocused; it is
@@ -201,7 +225,7 @@ func Run(st *store.Store, searchMode store.SearchMode, configPath string) error 
 
 func (m Model) Init() tea.Cmd {
 	m.loading = true
-	return tea.Batch(loadDashboardCmd(m.store), loadStatsCmd(m.store), m.spinner.Tick)
+	return tea.Batch(loadDashboardCmd(m.store), loadStatsCmd(m.store), loadAnalyticsCmd(m.store), m.spinner.Tick)
 }
 
 // Command constructors.
@@ -230,32 +254,71 @@ func loadSessionCmd(st *store.Store, sessionID string) tea.Cmd {
 	}
 }
 
-func loadCaptureCmd(st *store.Store, sessionID string, seq int) tea.Cmd {
+func loadCaptureCmd(st *store.Store, sessionID string, seq int, searchMode store.SearchMode) tea.Cmd {
 	return func() tea.Msg {
 		record, err := st.GetCaptureBySeq(sessionID, seq)
-		return captureLoadedMsg{record: record, err: err}
+		if err != nil {
+			return captureLoadedMsg{err: err}
+		}
+		// Render the agent view up front so the pane never has to hit the
+		// database while drawing.
+		agentView, renderErr := mcp.RenderRead(context.Background(), st, sessionID, seq)
+		if renderErr != nil {
+			agentView = ""
+		}
+		return captureLoadedMsg{record: record, agentView: agentView}
 	}
 }
 
-func loadSearchCmd(st *store.Store, sessionID, query string, searchMode store.SearchMode) tea.Cmd {
+// loadAnalyticsCmd loads the usage aggregates shown on the overview tab. The
+// window matches the sparkline the overview renders.
+func loadAnalyticsCmd(st *store.Store) tea.Cmd {
 	return func() tea.Msg {
-		results, err := st.SearchWithMode(sessionID, query, 3, searchMode)
+		if st == nil {
+			return analyticsLoadedMsg{}
+		}
+		analytics, err := st.AnalyticsContext(context.Background(), overviewWindowDays)
+		return analyticsLoadedMsg{analytics: analytics, err: err}
+	}
+}
 
-		rootID, rootErr := st.ResolveRoot(sessionID)
-		if rootErr != nil {
-			rootID = sessionID
+// loadSearchCmd runs a search either inside one session or across every live
+// session when allSessions is set.
+func loadSearchCmd(st *store.Store, sessionID, query string, searchMode store.SearchMode, allSessions bool) tea.Cmd {
+	return func() tea.Msg {
+		scope := sessionID
+		if allSessions {
+			scope = ""
 		}
 
+		results, err := st.SearchContext(context.Background(), query, store.SearchOptions{
+			SessionID:    scope,
+			Mode:         searchMode,
+			ContextLines: 3,
+		})
+
+		msg := searchLoadedMsg{
+			sessionID:   sessionID,
+			rootID:      sessionID,
+			query:       query,
+			results:     results,
+			allSessions: allSessions,
+			err:         err,
+		}
+
+		if allSessions {
+			if stats, statsErr := st.Stats(); statsErr == nil {
+				msg.totalCaptures = stats.Captures
+			}
+			return msg
+		}
+
+		if rootID, rootErr := st.ResolveRoot(sessionID); rootErr == nil {
+			msg.rootID = rootID
+		}
 		captures, _ := st.ListCaptures(sessionID, "")
-
-		return searchLoadedMsg{
-			sessionID:     sessionID,
-			rootID:        rootID,
-			totalCaptures: len(captures),
-			query:         query,
-			results:       results,
-			err:           err,
-		}
+		msg.totalCaptures = len(captures)
+		return msg
 	}
 }
 
@@ -283,13 +346,6 @@ func (m Model) selectedSessionCaptureFromFiltered(visible []store.CaptureRecord)
 	}
 	c := visible[m.sessionCursor]
 	return &c
-}
-
-func (m Model) selectedSearchResult() *store.SearchResult {
-	if len(m.searchResults) == 0 || m.searchCursor < 0 || m.searchCursor >= len(m.searchResults) {
-		return nil
-	}
-	return &m.searchResults[m.searchCursor]
 }
 
 // filteredCaptures returns the session captures filtered by filterQuery (client-side).
@@ -431,12 +487,27 @@ func (m *Model) syncComponentSize() {
 	m.contentViewport.Width = vpWidth
 	m.contentViewport.Height = vpHeight
 	if m.rightPanel == PanelCaptureDetail && m.selectedCapture != nil {
-		wrappedContent := wordwrap.String(m.selectedCapture.Content, vpWidth)
+		wrappedContent := wordwrap.String(m.captureContent(), vpWidth)
 		m.contentViewport.SetContent(wrappedContent)
 	} else if m.rightPanel == PanelSearchResults && m.searchRawOutput != "" {
 		wrappedContent := wordwrap.String(m.searchRawOutput, vpWidth)
 		m.contentViewport.SetContent(wrappedContent)
 	}
+}
+
+// captureContent returns what the capture pane should display. The default is
+// the agent view: the exact payload the MCP `read` tool hands to the model,
+// trust boundary and truncation included, because inspecting what the agent
+// actually received is the point of this tool. Raw mode drops to the stored
+// document as it sits in SQLite.
+func (m Model) captureContent() string {
+	if m.selectedCapture == nil {
+		return ""
+	}
+	if m.captureRaw || m.captureAgentView == "" {
+		return m.selectedCapture.Content
+	}
+	return m.captureAgentView
 }
 
 // setError records an error message and clears the status message.

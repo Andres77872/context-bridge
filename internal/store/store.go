@@ -53,7 +53,8 @@ var (
 )
 
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 type CaptureInput struct {
@@ -90,12 +91,15 @@ type SearchResult struct {
 }
 
 type SessionSummary struct {
-	ID             string
-	CreatedAt      time.Time
-	LastCapturedAt time.Time
-	CaptureCount   int
-	DeletedAt      *time.Time
-	EndedAt        *time.Time
+	ID              string
+	CreatedAt       time.Time
+	FirstCapturedAt time.Time
+	LastCapturedAt  time.Time
+	CaptureCount    int
+	Bytes           int64
+	AgentCount      int
+	DeletedAt       *time.Time
+	EndedAt         *time.Time
 }
 
 func Open(dbPath string) (*Store, error) {
@@ -138,7 +142,7 @@ func open(dbPath string, managedDirectory bool) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, path: dbPath}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -561,6 +565,126 @@ func (s *Store) ListCapturesContext(ctx context.Context, sessionID, agent string
 	return captures, nil
 }
 
+// CaptureListOptions describes a filtered, paged capture listing.
+type CaptureListOptions struct {
+	SessionID string
+	Agent     string
+	Query     string
+	Newest    bool
+	Limit     int
+	Offset    int
+}
+
+// CapturePage is one page of captures plus the totals needed to render
+// "showing X of Y" without a second round trip.
+type CapturePage struct {
+	Captures []CaptureRecord
+	Total    int
+	Filtered int
+	Agents   []string
+}
+
+// ListCapturesPageContext lists captures for a session with server-side agent
+// and text filtering. Filtering in SQL keeps large sessions cheap: the caller
+// never materialises rows it will not show.
+func (s *Store) ListCapturesPageContext(ctx context.Context, opts CaptureListOptions) (*CapturePage, error) {
+	if opts.Limit < 0 || opts.Offset < 0 {
+		return nil, errors.New("capture limit and offset must not be negative")
+	}
+	rootID, err := s.ResolveRootContext(ctx, opts.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	agent := strings.TrimSpace(opts.Agent)
+	if agent != "" {
+		if len([]byte(agent)) > maxAgentBytes || !identifierPattern.MatchString(agent) {
+			return nil, errors.New("agent filter contains unsupported characters or is too long")
+		}
+	}
+	textQuery := strings.TrimSpace(opts.Query)
+	if len([]byte(textQuery)) > maxSearchQueryBytes {
+		return nil, fmt.Errorf("capture filter exceeds %d bytes", maxSearchQueryBytes)
+	}
+
+	const scope = `
+		FROM captures c
+		JOIN sessions s ON s.id = c.session_id
+		WHERE c.session_id = ? AND s.deleted_at IS NULL
+		  AND julianday(c.created_at) >= julianday('now', '-30 days')
+	`
+	where := ""
+	args := []any{rootID}
+	if agent != "" {
+		where += ` AND c.agent = ?`
+		args = append(args, agent)
+	}
+	if textQuery != "" {
+		pattern := "%" + escapeLikePattern(textQuery) + "%"
+		where += ` AND (c.description LIKE ? ESCAPE '\' OR c.agent LIKE ? ESCAPE '\' OR c.preview LIKE ? ESCAPE '\' OR CAST(c.seq AS TEXT) LIKE ? ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern, pattern)
+	}
+
+	page := &CapturePage{Captures: []CaptureRecord{}, Agents: []string{}}
+
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(c.id)`+scope, rootID).Scan(&page.Total); err != nil {
+		return nil, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(c.id)`+scope+where, args...).Scan(&page.Filtered); err != nil {
+		return nil, err
+	}
+
+	agentRows, err := s.db.QueryContext(ctx, `SELECT DISTINCT c.agent`+scope+` ORDER BY c.agent ASC`, rootID)
+	if err != nil {
+		return nil, err
+	}
+	defer agentRows.Close()
+	for agentRows.Next() {
+		var name string
+		if err := agentRows.Scan(&name); err != nil {
+			return nil, err
+		}
+		page.Agents = append(page.Agents, name)
+	}
+	if err := agentRows.Err(); err != nil {
+		return nil, err
+	}
+
+	order := ` ORDER BY c.seq ASC`
+	if opts.Newest {
+		order = ` ORDER BY c.seq DESC`
+	}
+	listQuery := `
+		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.bytes, c.source_path, c.captured_at, s.deleted_at, s.ended_at
+	` + scope + where + order
+	listArgs := append([]any{}, args...)
+	if opts.Limit > 0 {
+		listQuery += ` LIMIT ? OFFSET ?`
+		listArgs = append(listArgs, opts.Limit, opts.Offset)
+	} else if opts.Offset > 0 {
+		listQuery += ` LIMIT -1 OFFSET ?`
+		listArgs = append(listArgs, opts.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		record, err := scanCapture(rows, false)
+		if err != nil {
+			return nil, err
+		}
+		page.Captures = append(page.Captures, *record)
+	}
+	return page, rows.Err()
+}
+
 func (s *Store) GetCaptureBySeq(sessionID string, seq int) (*CaptureRecord, error) {
 	return s.GetCaptureBySeqContext(context.Background(), sessionID, seq)
 }
@@ -637,61 +761,10 @@ func (s *Store) RootSessionExistsContext(ctx context.Context, sessionID string) 
 	return exists, err
 }
 
+// ListRootSessions lists the most recently active root sessions. It is the
+// unfiltered shorthand for ListRootSessionsContext.
 func (s *Store) ListRootSessions(limit int) ([]SessionSummary, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-
-	rows, err := s.db.Query(`
-		SELECT
-			s.id,
-			s.created_at,
-			s.deleted_at,
-			s.ended_at,
-			COUNT(c.id) AS capture_count,
-			MAX(c.captured_at) AS last_captured_at
-		FROM sessions s
-		LEFT JOIN captures c ON c.session_id = s.id
-		  AND julianday(c.created_at) >= julianday('now', '-30 days')
-		WHERE s.parent_id IS NULL AND s.deleted_at IS NULL
-		GROUP BY s.id, s.created_at, s.deleted_at, s.ended_at
-		ORDER BY COALESCE(MAX(c.captured_at), s.created_at) DESC, s.created_at DESC
-		LIMIT ?
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var sessions []SessionSummary
-	for rows.Next() {
-		var summary SessionSummary
-		var createdAt string
-		var deletedAt sql.NullString
-		var endedAt sql.NullString
-		var lastCapturedAt sql.NullString
-
-		if err := rows.Scan(&summary.ID, &createdAt, &deletedAt, &endedAt, &summary.CaptureCount, &lastCapturedAt); err != nil {
-			return nil, err
-		}
-
-		summary.CreatedAt = parseDBTime(createdAt)
-		if lastCapturedAt.Valid {
-			summary.LastCapturedAt = parseDBTime(lastCapturedAt.String)
-		}
-		if deletedAt.Valid {
-			t := parseDBTime(deletedAt.String)
-			summary.DeletedAt = &t
-		}
-		if endedAt.Valid {
-			t := parseDBTime(endedAt.String)
-			summary.EndedAt = &t
-		}
-
-		sessions = append(sessions, summary)
-	}
-
-	return sessions, rows.Err()
+	return s.ListRootSessionsContext(context.Background(), SessionListOptions{Limit: limit})
 }
 
 // StoreStats holds aggregate statistics for all root sessions.
@@ -734,18 +807,44 @@ func (s *Store) SearchWithMode(sessionID, query string, contextLines int, mode S
 	return s.SearchWithModeContext(context.Background(), sessionID, query, contextLines, mode, 0, 0, 0)
 }
 
-// SearchWithModeContext runs a cancellable search. Positive limits bound the
-// number of returned captures, matched lines, and regex candidate captures.
-// A zero limit preserves the unbounded internal API used by the local TUI.
+// SearchOptions describes one search request. An empty SessionID searches
+// every live root session; a non-empty one is resolved to its root first.
+type SearchOptions struct {
+	SessionID     string
+	Agent         string
+	Mode          SearchMode
+	ContextLines  int
+	MaxResults    int
+	MaxMatches    int
+	MaxCandidates int
+}
+
+// SearchWithModeContext runs a cancellable search scoped to one session.
+// Positive limits bound the number of returned captures, matched lines, and
+// regex candidate captures. A zero limit preserves the unbounded internal API
+// used by the local TUI.
 func (s *Store) SearchWithModeContext(ctx context.Context, sessionID, query string, contextLines int, mode SearchMode, maxResults, maxMatches, maxCandidates int) ([]SearchResult, error) {
-	if maxResults < 0 || maxMatches < 0 || maxCandidates < 0 {
+	return s.SearchContext(ctx, query, SearchOptions{
+		SessionID:     sessionID,
+		Mode:          mode,
+		ContextLines:  contextLines,
+		MaxResults:    maxResults,
+		MaxMatches:    maxMatches,
+		MaxCandidates: maxCandidates,
+	})
+}
+
+// SearchContext runs a cancellable search with an explicit scope. It is the
+// single entry point behind every session-scoped and cross-session search.
+func (s *Store) SearchContext(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
+	if opts.MaxResults < 0 || opts.MaxMatches < 0 || opts.MaxCandidates < 0 {
 		return nil, errors.New("search limits must not be negative")
 	}
-	if contextLines < 0 {
-		contextLines = 3
+	if opts.ContextLines < 0 {
+		opts.ContextLines = 3
 	}
-	if contextLines > 20 {
-		contextLines = 20
+	if opts.ContextLines > 20 {
+		opts.ContextLines = 20
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -755,39 +854,92 @@ func (s *Store) SearchWithModeContext(ctx context.Context, sessionID, query stri
 		return nil, fmt.Errorf("query exceeds %d bytes", maxSearchQueryBytes)
 	}
 
-	switch mode {
-	case SearchModeRegex, "":
-		return s.searchRegexContext(ctx, sessionID, query, contextLines, maxResults, maxMatches, maxCandidates)
-	case SearchModeFTS5:
-		return s.searchFTS5Context(ctx, sessionID, query, contextLines, maxResults, maxMatches)
-	default:
-		return nil, fmt.Errorf("unsupported search mode: %q", mode)
-	}
-}
-
-func (s *Store) searchRegexContext(ctx context.Context, sessionID, query string, contextLines, maxResults, maxMatches, maxCandidates int) ([]SearchResult, error) {
-	rootID, err := s.ResolveRootContext(ctx, sessionID)
+	scope, err := s.resolveSearchScope(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
+	switch opts.Mode {
+	case SearchModeRegex, "":
+		return s.searchRegexContext(ctx, scope, query, opts)
+	case SearchModeFTS5:
+		return s.searchFTS5Context(ctx, scope, query, opts)
+	default:
+		return nil, fmt.Errorf("unsupported search mode: %q", opts.Mode)
+	}
+}
+
+// searchScope holds the resolved SQL predicates shared by both search engines.
+type searchScope struct {
+	rootID string
+	agent  string
+}
+
+func (sc searchScope) global() bool { return sc.rootID == "" }
+
+// predicate returns the WHERE fragment and arguments for this scope. The
+// caller supplies the alias used for the captures and sessions tables.
+func (sc searchScope) predicate() (string, []any) {
+	var clause strings.Builder
+	args := []any{}
+	if sc.global() {
+		clause.WriteString(` ses.parent_id IS NULL AND ses.deleted_at IS NULL`)
+	} else {
+		clause.WriteString(` c.session_id = ? AND ses.deleted_at IS NULL`)
+		args = append(args, sc.rootID)
+	}
+	clause.WriteString(` AND julianday(c.created_at) >= julianday('now', '-30 days')`)
+	if sc.agent != "" {
+		clause.WriteString(` AND c.agent = ?`)
+		args = append(args, sc.agent)
+	}
+	return clause.String(), args
+}
+
+func (s *Store) resolveSearchScope(ctx context.Context, opts SearchOptions) (searchScope, error) {
+	scope := searchScope{}
+	if agent := strings.TrimSpace(opts.Agent); agent != "" {
+		if len([]byte(agent)) > maxAgentBytes || !identifierPattern.MatchString(agent) {
+			return scope, errors.New("agent filter contains unsupported characters or is too long")
+		}
+		scope.agent = agent
+	}
+	if strings.TrimSpace(opts.SessionID) == "" {
+		return scope, nil
+	}
+	rootID, err := s.ResolveRootContext(ctx, opts.SessionID)
+	if err != nil {
+		return scope, err
+	}
+	scope.rootID = rootID
+	return scope, nil
+}
+
+func (s *Store) searchRegexContext(ctx context.Context, scope searchScope, query string, opts SearchOptions) ([]SearchResult, error) {
 	re, err := regexp.Compile("(?i)" + query)
 	if err != nil {
 		return nil, fmt.Errorf("invalid regex pattern: %w", err)
 	}
 
+	where, args := scope.predicate()
 	querySQL := `
 		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.content, c.bytes, c.source_path, c.captured_at, ses.deleted_at, ses.ended_at
 		FROM captures c
 		JOIN sessions ses ON ses.id = c.session_id
-		WHERE c.session_id = ? AND ses.deleted_at IS NULL
-		  AND julianday(c.created_at) >= julianday('now', '-30 days')
-	`
-	args := []any{rootID}
-	if maxCandidates > 0 {
+		WHERE` + where
+
+	// Bounded scans read the newest captures first so a truncated sweep still
+	// surfaces current work; unbounded scans keep chronological order.
+	switch {
+	case opts.MaxCandidates > 0 && scope.global():
+		querySQL += ` ORDER BY c.captured_at DESC, c.id DESC LIMIT ?`
+		args = append(args, opts.MaxCandidates)
+	case opts.MaxCandidates > 0:
 		querySQL += ` ORDER BY c.seq DESC LIMIT ?`
-		args = append(args, maxCandidates)
-	} else {
+		args = append(args, opts.MaxCandidates)
+	case scope.global():
+		querySQL += ` ORDER BY c.captured_at ASC, c.id ASC`
+	default:
 		querySQL += ` ORDER BY c.seq ASC`
 	}
 
@@ -808,19 +960,19 @@ func (s *Store) searchRegexContext(ctx context.Context, sessionID, query string,
 			return nil, err
 		}
 		remainingMatches := 0
-		if maxMatches > 0 {
-			remainingMatches = maxMatches - totalMatches
+		if opts.MaxMatches > 0 {
+			remainingMatches = opts.MaxMatches - totalMatches
 			if remainingMatches <= 0 {
 				break
 			}
 		}
-		snippet, matches := buildSnippetLimited(record.Content, re, contextLines, remainingMatches)
+		snippet, matches := buildSnippetLimited(record.Content, re, opts.ContextLines, remainingMatches)
 		if matches == 0 {
 			continue
 		}
 		results = append(results, SearchResult{Capture: *record, Snippet: snippet, MatchCount: matches})
 		totalMatches += matches
-		if maxResults > 0 && len(results) >= maxResults {
+		if opts.MaxResults > 0 && len(results) >= opts.MaxResults {
 			break
 		}
 	}
@@ -830,12 +982,7 @@ func (s *Store) searchRegexContext(ctx context.Context, sessionID, query string,
 	return results, nil
 }
 
-func (s *Store) searchFTS5Context(ctx context.Context, sessionID, query string, contextLines, maxResults, maxMatches int) ([]SearchResult, error) {
-	rootID, err := s.ResolveRootContext(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
+func (s *Store) searchFTS5Context(ctx context.Context, scope searchScope, query string, opts SearchOptions) ([]SearchResult, error) {
 	matchQuery, err := search.BuildLiteralFTS5Match(query)
 	if err != nil {
 		return nil, err
@@ -845,20 +992,24 @@ func (s *Store) searchFTS5Context(ctx context.Context, sessionID, query string, 
 		return nil, err
 	}
 
+	where, scopeArgs := scope.predicate()
+	orderBy := ` ORDER BY rank, c.seq ASC`
+	if scope.global() {
+		orderBy = ` ORDER BY rank, c.captured_at DESC, c.id DESC`
+	}
+
 	querySQL := `
 		SELECT c.id, c.session_id, c.seq, c.child_session_id, c.call_id, c.agent, c.description, c.preview, c.bytes, c.source_path, c.captured_at, ses.deleted_at, ses.ended_at,
 		       highlight(captures_fts, 1, ?, ?) AS content_hl
 		FROM captures c
 		JOIN sessions ses ON ses.id = c.session_id
 		JOIN captures_fts ON captures_fts.rowid = c.id
-		WHERE c.session_id = ? AND ses.deleted_at IS NULL AND captures_fts MATCH ?
-		  AND julianday(c.created_at) >= julianday('now', '-30 days')
-		ORDER BY rank, c.seq ASC
-	`
-	args := []any{highlightStart, highlightEnd, rootID, matchQuery}
-	if maxResults > 0 {
+		WHERE captures_fts MATCH ? AND` + where + orderBy
+
+	args := append([]any{highlightStart, highlightEnd, matchQuery}, scopeArgs...)
+	if opts.MaxResults > 0 {
 		querySQL += ` LIMIT ?`
-		args = append(args, maxResults)
+		args = append(args, opts.MaxResults)
 	}
 	rows, err := s.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
@@ -877,13 +1028,13 @@ func (s *Store) searchFTS5Context(ctx context.Context, sessionID, query string, 
 			return nil, err
 		}
 		remainingMatches := 0
-		if maxMatches > 0 {
-			remainingMatches = maxMatches - totalMatches
+		if opts.MaxMatches > 0 {
+			remainingMatches = opts.MaxMatches - totalMatches
 			if remainingMatches <= 0 {
 				break
 			}
 		}
-		snippet, matches := buildFTS5SnippetLimited(contentHL, contextLines, remainingMatches, highlightStart, highlightEnd)
+		snippet, matches := buildFTS5SnippetLimited(contentHL, opts.ContextLines, remainingMatches, highlightStart, highlightEnd)
 		if matches == 0 {
 			continue
 		}
@@ -1712,10 +1863,6 @@ func parseDBTime(value string) time.Time {
 		}
 	}
 	return time.Time{}
-}
-
-func buildSnippet(content string, re *regexp.Regexp, contextLines int) (string, int) {
-	return buildSnippetLimited(content, re, contextLines, 0)
 }
 
 func buildSnippetLimited(content string, re *regexp.Regexp, contextLines, maxMatches int) (string, int) {

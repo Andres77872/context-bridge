@@ -196,6 +196,30 @@ go install ./cmd/context-bridge
 context-bridge integration install
 ```
 
+### Local development
+
+`script/dev.sh` builds the binary and runs it against an isolated workspace in `.dev/` (gitignored), so a dev session never touches the captured work in `~/.local/share/context-bridge`. That isolation matters because the dashboard and TUI can delete sessions and outputs.
+
+```bash
+./script/dev.sh              # build, then serve the dashboard on 127.0.0.1:7441
+./script/dev.sh web --open   # extra flags pass through to the subcommand
+./script/dev.sh tui          # terminal browser against the same dev database
+./script/dev.sh serve        # ingest server on the dev Unix socket
+./script/dev.sh mcp          # MCP stdio server (stdout stays pure JSON-RPC)
+./script/dev.sh seed         # fill the dev database with demo sessions
+./script/dev.sh check        # gofmt, go vet, and the full test suite
+./script/dev.sh build        # build only
+./script/dev.sh stop         # stop the dev dashboard and ingest server
+./script/dev.sh reset        # delete the dev workspace
+```
+
+The dev port is 7441 so it does not collide with an installed dashboard on the default 7440; override it with `CONTEXT_BRIDGE_WEB_ADDR`. `seed` posts demo captures through the real `/capture` ingest path, so the data goes through the same normalization, redaction, and FTS indexing as production traffic. Builds stamp `main.version` from `git describe`, so `/api/meta` and the dashboard footer show exactly which tree is running.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXT_BRIDGE_DEV_HOME` | `<repo>/.dev` | Dev workspace holding the database, config, and socket |
+| `CONTEXT_BRIDGE_WEB_ADDR` | `127.0.0.1:7441` | Address the dev dashboard binds |
+
 ## Uninstall
 
 context-bridge ships with both a hosted uninstall entrypoint and a native CLI command. Both use the same uninstall engine and the same safety rules.
@@ -437,15 +461,38 @@ Opens an interactive terminal browser for captured outputs.
 context-bridge tui
 ```
 
+The Overview tab summarises usage: session/output/storage totals, a 14-day activity sparkline with 24h and 7d counts, an agent leaderboard, the busiest sessions, and median output size against the retention window. Sessions and Search share a two-pane layout.
+
+Opening an output shows the exact MCP `read` payload the agent received; `r` switches to the stored document.
+
+**Keys:** `tab` or `1`/`2`/`3` switch tabs · `j`/`k` move · `enter` open · `/` filter the output list · `s` search · `ctrl+g` toggle the search scope between the selected session and **all live sessions** · `r` agent view / stored document · `x` delete · `p` search settings · `q` back, `ctrl+c` quit.
+
 ### `context-bridge web`
 
-Starts a web dashboard for browsing captured outputs.
+Starts a web dashboard for browsing, searching, and measuring captured outputs.
 
 ```bash
 context-bridge web
 context-bridge web --addr 127.0.0.1:7440
 context-bridge web --open
 ```
+
+**What it gives you:**
+
+| View | Contents |
+|------|----------|
+| Overview | Session, output, and storage totals with a 14-day trend, capture-per-day chart, agent leaderboard, and recent sessions |
+| Analytics | Selectable 7/14/30-day window: captures per day, a weekday×hour activity heatmap, per-agent share of outputs and bytes, output-size histogram, busiest sessions, median/p95 output size, and database size on disk |
+| Sessions | Session list with id filter, sort (recent, outputs, size, created, id) and a deleted-session toggle; per-session usage header, server-side agent and text filters over outputs, paging, JSON export, and an output viewer with line numbers, wrap toggle, find-in-output, copy, and raw download |
+| Search | Search **every session at once** or one session, filtered by agent, with adjustable context lines, per-result match counts, grouped results, and one-click jump to the matching output |
+
+**Agent view.** The point of the dashboard is seeing what the model actually received, so every output opens on the exact text the MCP `read` tool returns — the untrusted-data prefix, the `<untrusted-context-bridge-data>` boundary, the tool header, the stored document, and the truncation notice when a payload hits the 128 KiB tool limit. Switch the source to **Stored** to see the raw row as it sits in SQLite instead. The session view and the search view have the same switch for the `list` and `search` payloads.
+
+The dashboard does not re-render captured output its own way: it calls the same render functions the MCP tool handlers call, and a test asserts the two are byte-for-byte identical. If a payload looks wrong in the dashboard, that is what the agent got.
+
+Every view is deep-linkable (`#/analytics`, `#/sessions/<id>/<seq>`, `#/search?q=…`), the whole dashboard is keyboard operable (press `?` for the shortcut list), and it follows your system light/dark theme with a manual toggle.
+
+The dashboard is fully self-contained: it ships its own stylesheet, script, and icons, downloads nothing at runtime, and renders identically on a machine with no network. Its Content-Security-Policy is `default-src 'none'` with no external origins and no inline script.
 
 **Environment variables:**
 

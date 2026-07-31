@@ -70,37 +70,209 @@ func (m Model) renderTabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
 }
 
+// viewOverviewTab renders the usage summary: totals, recent activity, which
+// agents are doing the work, and where the storage went.
 func (m Model) viewOverviewTab(w, h int) string {
-	var lines []string
-
-	// Stats card
-	if m.stats.Sessions > 0 || m.stats.Captures > 0 {
-		card := fmt.Sprintf("  %s  ·  %s  ·  %s",
-			statNumberStyle.Render(fmt.Sprintf("%d", m.stats.Sessions))+" "+statLabelStyle.Render("sessions"),
-			statNumberStyle.Render(fmt.Sprintf("%d", m.stats.Captures))+" "+statLabelStyle.Render("outputs"),
-			statLabelStyle.Render(store.FormatBytes(int(m.stats.TotalBytes))),
-		)
-		lines = append(lines, statCardStyle.Render(card))
+	if len(m.dashboardSessions) == 0 && m.stats.Captures == 0 {
+		return m.viewOverviewEmpty(w, h)
 	}
 
+	innerWidth := w - 4
+	if innerWidth < 30 {
+		innerWidth = 30
+	}
+
+	var lines []string
+	lines = append(lines, statCardStyle.Render(fmt.Sprintf("  %s  ·  %s  ·  %s  ·  %s",
+		statNumberStyle.Render(fmt.Sprintf("%d", m.stats.Sessions))+" "+statLabelStyle.Render("sessions"),
+		statNumberStyle.Render(fmt.Sprintf("%d", m.stats.Captures))+" "+statLabelStyle.Render("outputs"),
+		statNumberStyle.Render(store.FormatBytes(int(m.stats.TotalBytes)))+" "+statLabelStyle.Render("stored"),
+		statLabelStyle.Render(fmt.Sprintf("%d active", m.analytics.ActiveSessions)),
+	)))
 	lines = append(lines, "")
+
+	lines = append(lines, m.overviewActivitySection(innerWidth)...)
+	lines = append(lines, m.overviewAgentSection(innerWidth)...)
+	lines = append(lines, m.overviewSessionSection(innerWidth)...)
+	lines = append(lines, m.overviewStorageSection(innerWidth)...)
+
+	lines = append(lines, "")
+	lines = append(lines, helpStyle.Render("  tab/1/2/3 switch view  ·  s search  ·  p settings  ·  i install plugin  ·  q quit"))
+
+	content := strings.Join(lines, "\n")
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Top, content)
+}
+
+func (m Model) viewOverviewEmpty(w, h int) string {
+	var lines []string
 	lines = append(lines, heroStyle.Render(strings.TrimPrefix(heroASCII, "\n")))
 	lines = append(lines, "")
 	lines = append(lines, titleStyle.Render("Welcome to Context Bridge"))
 	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("No sessions captured yet.\nRun `context-bridge serve` and start an OpenCode session."))
+	lines = append(lines, "")
+	lines = append(lines, helpStyle.Render("  i install plugin  ·  q quit"))
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, strings.Join(lines, "\n"))
+}
 
-	if len(m.dashboardSessions) == 0 {
-		lines = append(lines, dimStyle.Render("No sessions captured yet.\nRun `context-bridge serve` and start an OpenCode session."))
-		lines = append(lines, "")
-		lines = append(lines, helpStyle.Render("  i install plugin  ·  q quit"))
-	} else {
-		lines = append(lines, dimStyle.Render("Press Tab to view sessions and their outputs."))
-		lines = append(lines, "")
-		lines = append(lines, helpStyle.Render("  tab/1/2 switch view  ·  i install plugin  ·  q quit"))
+func (m Model) overviewActivitySection(width int) []string {
+	if !m.analyticsLoaded || len(m.analytics.Daily) == 0 {
+		return nil
 	}
 
-	content := strings.Join(lines, "\n")
-	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
+	values := make([]int, 0, len(m.analytics.Daily))
+	peak := 0
+	for _, bucket := range m.analytics.Daily {
+		values = append(values, bucket.Captures)
+		if bucket.Captures > peak {
+			peak = bucket.Captures
+		}
+	}
+
+	chartWidth := width - 4
+	if chartWidth > len(values) {
+		chartWidth = len(values)
+	}
+	if chartWidth < 8 {
+		chartWidth = 8
+	}
+
+	summary := fmt.Sprintf("peak %d/day · %d in 24h · %d in 7d",
+		peak, m.analytics.Captures24h, m.analytics.Captures7d)
+
+	return []string{
+		titleStyle.Render(fmt.Sprintf("Activity · last %d days", m.analytics.WindowDays)),
+		lipgloss.NewStyle().Foreground(colorFoam).Render("  " + sparkline(values, chartWidth)),
+		dimStyle.Render("  " + summary),
+		"",
+	}
+}
+
+func (m Model) overviewAgentSection(width int) []string {
+	if !m.analyticsLoaded || len(m.analytics.Agents) == 0 {
+		return nil
+	}
+
+	agents := m.analytics.Agents
+	if len(agents) > 5 {
+		agents = agents[:5]
+	}
+	maxCaptures := 1
+	for _, agent := range agents {
+		if agent.Captures > maxCaptures {
+			maxCaptures = agent.Captures
+		}
+	}
+
+	barWidth := width - 34
+	if barWidth < 6 {
+		barWidth = 6
+	}
+	if barWidth > 24 {
+		barWidth = 24
+	}
+
+	lines := []string{titleStyle.Render("Agents")}
+	for _, agent := range agents {
+		filled := agent.Captures * barWidth / maxCaptures
+		if filled < 1 {
+			filled = 1
+		}
+		bar := lipgloss.NewStyle().Foreground(agentColor(agent.Agent)).Render(strings.Repeat("█", filled)) +
+			dimStyle.Render(strings.Repeat("·", barWidth-filled))
+		label := lipgloss.NewStyle().Width(12).Render(truncateLine(agent.Agent, 12))
+		lines = append(lines, fmt.Sprintf("  %s %s %s",
+			label, bar,
+			metaStyle.Render(fmt.Sprintf("%4d  %s", agent.Captures, store.FormatBytes(int(agent.Bytes)))),
+		))
+	}
+	return append(lines, "")
+}
+
+func (m Model) overviewSessionSection(width int) []string {
+	if !m.analyticsLoaded || len(m.analytics.TopSessions) == 0 {
+		return nil
+	}
+
+	sessions := m.analytics.TopSessions
+	if len(sessions) > 3 {
+		sessions = sessions[:3]
+	}
+
+	idWidth := width - 34
+	if idWidth < 12 {
+		idWidth = 12
+	}
+	if idWidth > 32 {
+		idWidth = 32
+	}
+
+	lines := []string{titleStyle.Render("Busiest sessions")}
+	for _, session := range sessions {
+		lines = append(lines, fmt.Sprintf("  %s %s",
+			lipgloss.NewStyle().Width(idWidth).Foreground(colorFoam).Render(truncateID(session.ID, idWidth)),
+			metaStyle.Render(fmt.Sprintf("%3d outputs  %8s  %d agents", session.Captures, store.FormatBytes(int(session.Bytes)), session.Agents)),
+		))
+	}
+	return append(lines, "")
+}
+
+func (m Model) overviewStorageSection(width int) []string {
+	if !m.analyticsLoaded {
+		return nil
+	}
+	return []string{
+		dimStyle.Render(fmt.Sprintf("  %s captured · %s on disk · median output %s · retention %dd",
+			store.FormatBytes(int(m.analytics.Bytes)),
+			store.FormatBytes(int(m.analytics.DiskBytes)),
+			store.FormatBytes(int(m.analytics.MedianCaptureBytes)),
+			m.analytics.RetentionDays,
+		)),
+	}
+}
+
+// sparkline renders counts as block glyphs, averaging buckets when the series
+// is wider than the space available.
+func sparkline(values []int, width int) string {
+	if len(values) == 0 || width <= 0 {
+		return ""
+	}
+
+	blocks := []rune("▁▂▃▄▅▆▇█")
+	buckets := make([]int, width)
+	for index, value := range values {
+		slot := index * width / len(values)
+		if slot >= width {
+			slot = width - 1
+		}
+		if value > buckets[slot] {
+			buckets[slot] = value
+		}
+	}
+
+	peak := 0
+	for _, value := range buckets {
+		if value > peak {
+			peak = value
+		}
+	}
+
+	var builder strings.Builder
+	for _, value := range buckets {
+		if value <= 0 {
+			builder.WriteRune('·')
+			continue
+		}
+		level := (value*len(blocks) - 1) / peak
+		if level < 0 {
+			level = 0
+		}
+		if level >= len(blocks) {
+			level = len(blocks) - 1
+		}
+		builder.WriteRune(blocks[level])
+	}
+	return builder.String()
 }
 
 func (m Model) viewSearchTab(w, h int) string {
@@ -449,7 +621,7 @@ func (m Model) viewCapture(w, innerH int) string {
 	var footerLines []string
 	scrollPercent := fmt.Sprintf("%3.f%%", m.contentViewport.ScrollPercent()*100)
 	if m.focus == FocusCaptureDetail {
-		footerLines = append(footerLines, helpStyle.Render("  ↑/↓ scroll  ·  pgup/pgdn page  ·  home/end jump  ·  s search  ·  esc back")+lipgloss.NewStyle().Foreground(colorRose).Render(fmt.Sprintf("   [%s]", scrollPercent)))
+		footerLines = append(footerLines, helpStyle.Render("  ↑/↓ scroll  ·  pgup/pgdn page  ·  s search  ·  r agent/stored  ·  esc back")+lipgloss.NewStyle().Foreground(colorRose).Render(fmt.Sprintf("   [%s]", scrollPercent)))
 	} else {
 		footerLines = append(footerLines, lipgloss.NewStyle().Foreground(colorSubtle).Render(fmt.Sprintf("   [%s]", scrollPercent)))
 	}
@@ -466,8 +638,7 @@ func (m Model) viewSearch(w, innerH int) string {
 	var parts []string
 	parts = append(parts, titleStyle.Render("Full-Text Search"))
 
-	sessionText := "Session: " + truncateID(m.searchScope, 12)
-	parts = append(parts, metaStyle.Render(truncateLine(sessionText, w-4)))
+	parts = append(parts, metaStyle.Render(truncateLine("Scope:  "+m.searchScopeLabel(), w-4)))
 	parts = append(parts, metaStyle.Render(truncateLine(fmt.Sprintf("Engine: %s (global setting, press p to change)", m.searchMode), w-4)))
 
 	parts = append(parts, "")
@@ -477,8 +648,19 @@ func (m Model) viewSearch(w, innerH int) string {
 		parts = append(parts, errorStyle.Render(truncateLine(m.searchErr, w-4)))
 		parts = append(parts, "")
 	}
-	parts = append(parts, helpStyle.Render("  type query  ·  enter search  ·  esc cancel"))
+	parts = append(parts, helpStyle.Render("  type query  ·  enter search  ·  ctrl+g scope  ·  esc cancel"))
 	return strings.Join(parts, "\n")
+}
+
+// searchScopeLabel describes what the next search will cover.
+func (m Model) searchScopeLabel() string {
+	if m.searchAllSessions {
+		return "all live sessions"
+	}
+	if strings.TrimSpace(m.searchScope) == "" {
+		return "no session selected (ctrl+g searches all)"
+	}
+	return "session " + truncateID(m.searchScope, 20)
 }
 
 func (m Model) viewSearchResults(w, innerH int) string {
@@ -488,8 +670,7 @@ func (m Model) viewSearchResults(w, innerH int) string {
 	titleText := fmt.Sprintf("Raw MCP Search Results for %q", m.searchQuery)
 	header = append(header, titleStyle.Render(truncateLine(titleText, w-4)))
 
-	sessionText := fmt.Sprintf("Session: %s", truncateID(m.searchScope, 12))
-	header = append(header, metaStyle.Render(truncateLine(sessionText, w-4)))
+	header = append(header, metaStyle.Render(truncateLine("Scope: "+m.searchScopeLabel(), w-4)))
 	header = append(header, "")
 
 	body := m.contentViewport.View()
@@ -501,7 +682,7 @@ func (m Model) viewSearchResults(w, innerH int) string {
 	var footerLines []string
 	scrollPercent := fmt.Sprintf("%3.f%%", m.contentViewport.ScrollPercent()*100)
 	if m.focus == FocusSearchResults {
-		footerLines = append(footerLines, helpStyle.Render("  ↑/↓ scroll  ·  pgup/pgdn page  ·  home/end jump  ·  s new search  ·  esc back")+lipgloss.NewStyle().Foreground(colorRose).Render(fmt.Sprintf("   [%s]", scrollPercent)))
+		footerLines = append(footerLines, helpStyle.Render("  ↑/↓ scroll  ·  pgup/pgdn page  ·  s new search  ·  ctrl+g scope  ·  esc back")+lipgloss.NewStyle().Foreground(colorRose).Render(fmt.Sprintf("   [%s]", scrollPercent)))
 	} else {
 		footerLines = append(footerLines, lipgloss.NewStyle().Foreground(colorSubtle).Render(fmt.Sprintf("   [%s]", scrollPercent)))
 	}

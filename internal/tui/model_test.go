@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"context-bridge/internal/config"
+	"context-bridge/internal/mcp"
 	"context-bridge/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -112,7 +114,7 @@ func TestSearchEnterLoadsResults(t *testing.T) {
 	}
 }
 
-func TestSearchRequiresSelectionFromDashboard(t *testing.T) {
+func TestSearchWithoutSelectionFallsBackToAllSessions(t *testing.T) {
 	m := New(nil, store.SearchModeRegex)
 	m.activeTab = TabSessions
 	m.focus = FocusSessions
@@ -120,11 +122,93 @@ func TestSearchRequiresSelectionFromDashboard(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	model := updated.(Model)
 
-	if model.focus != FocusSessions {
-		t.Fatalf("expected to remain on dashboard, got %v", model.focus)
+	if model.focus != FocusSearch || model.rightPanel != PanelSearch {
+		t.Fatalf("expected the search panel to open, got focus %v panel %v", model.focus, model.rightPanel)
 	}
-	if model.statusMsg != "Select a session before searching" {
+	if !model.searchAllSessions {
+		t.Fatal("expected search to fall back to all sessions when nothing is selected")
+	}
+	if !strings.Contains(model.searchScopeLabel(), "all live sessions") {
+		t.Fatalf("expected an all-sessions scope label, got %q", model.searchScopeLabel())
+	}
+}
+
+func TestSearchScopeToggleSwitchesBetweenSessionAndGlobal(t *testing.T) {
+	m := New(nil, store.SearchModeRegex)
+	m.activeTab = TabSearch
+	m.rightPanel = PanelSearch
+	m.focus = FocusSearch
+	m.searchScope = "ses_root"
+	m.searchInput.Focus()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	model := updated.(Model)
+	if !model.searchAllSessions {
+		t.Fatal("expected ctrl+g to widen the scope to all sessions")
+	}
+	if model.statusMsg != "Search scope: all live sessions" {
 		t.Fatalf("unexpected status: %q", model.statusMsg)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	model = updated.(Model)
+	if model.searchAllSessions {
+		t.Fatal("expected ctrl+g to narrow the scope back to the selected session")
+	}
+}
+
+func TestSearchAcrossAllSessionsReturnsResultsFromEverySession(t *testing.T) {
+	st := openTestStore(t)
+	for _, sessionID := range []string{"ses_one", "ses_two"} {
+		if err := st.EnsureSession(sessionID, ""); err != nil {
+			t.Fatalf("ensure session: %v", err)
+		}
+		if _, err := st.AddCapture(store.CaptureInput{
+			ParentSessionID: sessionID,
+			CallID:          "call-" + sessionID,
+			Agent:           "grep",
+			Description:     "shared",
+			Content:         "shared needle content",
+			CapturedAt:      time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed capture for %s: %v", sessionID, err)
+		}
+	}
+
+	m := New(st, store.SearchModeRegex)
+	m.activeTab = TabSearch
+	m.rightPanel = PanelSearch
+	m.focus = FocusSearch
+	m.searchScope = "ses_one"
+	m.searchAllSessions = true
+	m.searchInput.SetValue("needle")
+	m.searchInput.Focus()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !updated.(Model).loading {
+		t.Fatal("expected loading")
+	}
+
+	msgs := runBatchCmd(cmd)
+	searchMsg, ok := findMsg[searchLoadedMsg](msgs)
+	if !ok {
+		t.Fatalf("expected searchLoadedMsg, got %d messages", len(msgs))
+	}
+	if !searchMsg.allSessions {
+		t.Fatal("expected the message to record an all-sessions search")
+	}
+	if len(searchMsg.results) != 2 {
+		t.Fatalf("expected a result from each session, got %d", len(searchMsg.results))
+	}
+
+	report := renderSearchOutput(searchMsg)
+	for _, sessionID := range []string{"ses_one", "ses_two"} {
+		if !strings.Contains(report, sessionID) {
+			t.Fatalf("expected the report to attribute results to %s, got:\n%s", sessionID, report)
+		}
+	}
+	if !strings.Contains(report, "all live sessions") {
+		t.Fatalf("expected the report to name the scope, got:\n%s", report)
 	}
 }
 
@@ -902,5 +986,131 @@ func TestSearchReflectsModeFTS5(t *testing.T) {
 	}
 	if len(searchMsg.results) != 1 {
 		t.Fatalf("fts5 mode should match 'authentication' word, got %d results", len(searchMsg.results))
+	}
+}
+
+func TestOverviewRendersUsageSummary(t *testing.T) {
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 40)
+	m.stats = store.StoreStats{Sessions: 2, Captures: 9, TotalBytes: 4096}
+	m.dashboardSessions = []store.SessionSummary{{ID: "ses_alpha", CaptureCount: 9, CreatedAt: time.Now()}}
+	m.analyticsLoaded = true
+	m.analytics = store.Analytics{
+		WindowDays:         14,
+		RetentionDays:      30,
+		ActiveSessions:     2,
+		Captures24h:        3,
+		Captures7d:         7,
+		Bytes:              4096,
+		DiskBytes:          65536,
+		MedianCaptureBytes: 400,
+		Daily: []store.ActivityBucket{
+			{Day: time.Now().AddDate(0, 0, -1), Captures: 2},
+			{Day: time.Now(), Captures: 7},
+		},
+		Agents: []store.AgentUsage{
+			{Agent: "grep", Captures: 6, Bytes: 3000},
+			{Agent: "explore", Captures: 3, Bytes: 1096},
+		},
+		TopSessions: []store.SessionUsage{{ID: "ses_alpha", Captures: 9, Bytes: 4096, Agents: 2}},
+	}
+
+	output := m.viewOverviewTab(110, 34)
+	for _, needle := range []string{"Activity", "Agents", "grep", "Busiest sessions", "ses_alpha", "retention 30d"} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("overview must mention %q, got:\n%s", needle, output)
+		}
+	}
+}
+
+func TestSparklineScalesToWidth(t *testing.T) {
+	line := sparkline([]int{0, 1, 4, 8}, 4)
+	if len([]rune(line)) != 4 {
+		t.Fatalf("expected 4 glyphs, got %q", line)
+	}
+	if !strings.HasPrefix(line, "·") {
+		t.Fatalf("expected zero buckets to render as a dot, got %q", line)
+	}
+	if !strings.HasSuffix(line, "█") {
+		t.Fatalf("expected the peak bucket to render as a full block, got %q", line)
+	}
+
+	if sparkline(nil, 10) != "" {
+		t.Fatal("expected an empty sparkline for no data")
+	}
+
+	wide := sparkline([]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 5)
+	if len([]rune(wide)) != 5 {
+		t.Fatalf("expected the series to be bucketed down to 5 glyphs, got %q", wide)
+	}
+}
+
+func TestCaptureContentShowsTheAgentViewByDefault(t *testing.T) {
+	st := openTestStore(t)
+	record, err := st.AddCapture(store.CaptureInput{
+		ParentSessionID: "ses_doc",
+		CallID:          "call_doc",
+		Agent:           "grep",
+		Description:     "find the handler",
+		Content:         "match at server.go:126",
+		CapturedAt:      time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("AddCapture: %v", err)
+	}
+
+	// The pane must show byte-for-byte what the MCP read tool hands the agent.
+	want, err := mcp.RenderRead(context.Background(), st, "ses_doc", record.Seq)
+	if err != nil {
+		t.Fatalf("RenderRead: %v", err)
+	}
+
+	msgs := runBatchCmd(loadCaptureCmd(st, "ses_doc", record.Seq, store.SearchModeRegex))
+	loaded, ok := findMsg[captureLoadedMsg](msgs)
+	if !ok {
+		t.Fatalf("expected captureLoadedMsg, got %d messages", len(msgs))
+	}
+
+	m := New(st, store.SearchModeRegex)
+	m.selectedCapture = loaded.record
+	m.captureAgentView = loaded.agentView
+
+	if got := m.captureContent(); got != want {
+		t.Fatalf("capture pane must match the MCP read payload.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+	if !strings.Contains(m.captureContent(), "<untrusted-context-bridge-data>") {
+		t.Fatal("the agent view must keep the trust boundary the agent sees")
+	}
+
+	m.captureRaw = true
+	if got := m.captureContent(); got != record.Content {
+		t.Fatalf("raw mode must show the stored document, got:\n%s", got)
+	}
+}
+
+func TestCaptureRawKeyTogglesTheView(t *testing.T) {
+	m := withDimensions(New(nil, store.SearchModeRegex), 120, 30)
+	m.activeTab = TabSessions
+	m.focus = FocusCaptureDetail
+	m.rightPanel = PanelCaptureDetail
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model := updated.(Model)
+	if !model.captureRaw {
+		t.Fatal("expected r to switch the capture pane to the stored document")
+	}
+	if model.statusMsg != "Showing the stored document" {
+		t.Fatalf("unexpected status: %q", model.statusMsg)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if updated.(Model).captureRaw {
+		t.Fatal("expected r to switch back to the agent output")
+	}
+}
+
+func TestCaptureContentWithNoSelectionIsEmpty(t *testing.T) {
+	m := New(nil, store.SearchModeRegex)
+	if m.captureContent() != "" {
+		t.Fatal("expected no content without a selected capture")
 	}
 }

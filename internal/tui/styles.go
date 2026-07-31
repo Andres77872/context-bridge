@@ -93,11 +93,16 @@ var agentBadgeColors = map[string]lipgloss.Color{
 	"web":      colorRose,
 }
 
+// agentColor returns the accent assigned to an agent name, falling back to a
+// neutral tone for agents outside the known set.
+func agentColor(agent string) lipgloss.Color {
+	if color, ok := agentBadgeColors[agent]; ok {
+		return color
+	}
+	return colorSubtle
+}
+
 // agentBadge renders a colored [agent] pill for a given agent type string.
 func agentBadge(agent string) string {
-	color, ok := agentBadgeColors[agent]
-	if !ok {
-		color = colorSubtle
-	}
-	return lipgloss.NewStyle().Foreground(color).Bold(true).Render("[" + agent + "]")
+	return lipgloss.NewStyle().Foreground(agentColor(agent)).Bold(true).Render("[" + agent + "]")
 }

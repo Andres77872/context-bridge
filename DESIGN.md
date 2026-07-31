@@ -86,12 +86,14 @@ context-bridge/
 │                                #   integration, update, uninstall, version)
 ├── internal/
 │   ├── store/
-│   │   └── store.go             # DB open, schema migration, all domain operations
+│   │   ├── store.go             # DB open, schema migration, all domain operations
+│   │   ├── analytics.go         # Usage aggregates, session detail, filtered listings
 │   │   └── store_test.go
 │   ├── search/
 │   │   └── fts5.go              # BuildLiteralFTS5Match — literal-safe FTS5 queries
 │   ├── mcp/
-│   │   └── mcp.go               # NewServer(), 3 tool registrations, result bounds, ServeStdio
+│   │   ├── mcp.go               # NewServer(), 3 tool registrations, result bounds, ServeStdio
+│   │   └── render.go            # The exact tool payloads; shared with the web and TUI surfaces
 │   ├── server/
 │   │   └── server.go            # HTTP server for plugin hooks and graceful shutdown
 │   ├── config/
@@ -103,8 +105,12 @@ context-bridge/
 │   │   ├── styles.go            # Lipgloss styling definitions
 │   │   └── plugin.go            # Plugin install helper for TUI
 │   ├── web/
-│   │   ├── web.go               # Web dashboard + REST API
-│   │   └── static/              # Embedded HTML/CSS/JS assets
+│   │   ├── web.go               # Server, routing, token/origin guard, security headers
+│   │   ├── api.go               # REST handlers, response shapes, error mapping
+│   │   └── static/              # Embedded, dependency-free dashboard
+│   │       ├── index.html       # Shell markup + inline SVG icon sprite
+│   │       ├── app.css          # Design tokens, light/dark themes, components
+│   │       └── app.js           # Router, API client, views, charts, shortcuts
 │   ├── uninstall/
 │   │   ├── uninstall.go         # Uninstall engine (artifact detection, removal)
 │   │   └── prompt.go            # Interactive confirmation prompts
@@ -148,7 +154,7 @@ context-bridge/
 | `internal/server` | HTTP endpoints for plugin hooks (`/health`, `/events`, `/capture`, `/hint`, `/shutdown`) | MCP protocol, agent-facing tools |
 | `internal/config` | Config file loading, search mode selection, config/data/socket path resolution | Any persistence, MCP behavior |
 | `internal/tui` | Terminal UI, tab/panel architecture, key routing, deletion flows | Any DB write path (uses store API) |
-| `internal/web` | Token-protected loopback dashboard, REST API, optional browser launch | MCP protocol, CLI surface |
+| `internal/web` | Token-protected loopback dashboard, REST API, analytics/search response shaping, self-contained frontend assets, optional browser launch | MCP protocol, CLI surface, aggregate SQL (delegates to `internal/store`) |
 | `internal/uninstall` | Artifact detection, removal logic, interactive prompts | Any persistence |
 | `internal/update` | Release resolution, checksum verification, atomic binary replacement, integration re-run | Ownership policy (delegates to `internal/opencode`), persistence |
 | `internal/opencode` | Adapter ownership manifest, atomic install/update, safe removal | OpenCode config files, HTTP server, search logic |
@@ -423,15 +429,35 @@ The default listener is `<UserConfigDir>/context-bridge/bridge.sock`. Its parent
 **Endpoints**:
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/stats` | GET | Aggregate stats (sessions, captures, bytes) |
+| `/api/meta` | GET | Build version, running search mode, retention window, database path and size, request limits |
+| `/api/stats` | GET | Aggregate stats (sessions, captures, bytes) — the cheap endpoint the dashboard polls |
+| `/api/analytics` | GET | Usage aggregates for a window (`?days=`, clamped to retention) |
+| `/api/agents` | GET | Distinct agents seen in the retention window |
 | `/api/config` | GET | Current config file contents |
 | `/api/config` | PUT | Update config (search mode, etc.) |
-| `/api/sessions` | GET | List root sessions with summaries |
+| `/api/search` | GET | Search across every live session, or one (`?session=`), with `?agent=`, `?context=`, `?limit=` |
+| `/api/sessions` | GET | List root sessions with usage totals (`?q=`, `?agent=`, `?sort=`, `?include_deleted=`, `?limit=`) |
+| `/api/sessions/{id}` | GET | Session detail: byte totals, per-agent breakdown, time span, sub-session count |
 | `/api/sessions/{id}` | DELETE | Soft-delete a session |
-| `/api/sessions/{id}/captures` | GET | List captures for a session |
+| `/api/sessions/{id}/export` | GET | Download the session and its captures as one JSON document |
+| `/api/sessions/{id}/captures` | GET | Filtered, paged capture listing (`?agent=`, `?q=`, `?order=`, `?limit=`, `?offset=`) |
 | `/api/sessions/{id}/captures/{seq}` | GET | Get single capture detail |
+| `/api/sessions/{id}/captures/{seq}/raw` | GET | Download the capture body as `text/plain` |
 | `/api/sessions/{id}/captures/{seq}` | DELETE | Delete a capture |
-| `/api/sessions/{id}/search` | GET | Search within a session |
+| `/api/sessions/{id}/search` | GET | Session-scoped alias for `/api/search` |
+| `/api/sessions/{id}/mcp/list` | GET | The exact payload the MCP `list` tool returns |
+| `/api/sessions/{id}/mcp/read/{seq}` | GET | The exact payload the MCP `read` tool returns |
+| `/api/sessions/{id}/mcp/search` | GET | The exact payload the MCP `search` tool returns |
+
+**Agent view.** The `mcp/*` endpoints exist because the dashboard's purpose is inspecting what the model received, not presenting a prettier version of it. `internal/mcp/render.go` holds `RenderList`, `RenderRead`, and `RenderSearch`; the MCP tool handlers are thin wrappers around them, and the dashboard and TUI call the same functions. `TestRenderFunctionsMatchToolOutputByteForByte` drives the tools over JSON-RPC and compares the result with the render functions, so a surface can never drift into showing something the agent never saw. The response carries the payload byte size, the tool-output limit, and whether truncation fired, because a truncated payload is exactly the kind of thing an operator is looking for.
+
+`/api/search` and `/api/sessions/{id}/search` share one implementation; the path form only pins the session. Both return an envelope (`results`, `total_matches`, `mode`, `scope`, `elapsed_ms`, `truncated`) so the client can distinguish "no matches" from "limit reached". Capture listings return `{items, total, filtered, limit, offset, agents, order}`, which is what lets the dashboard show "showing X of Y" and populate its agent filter without a second request.
+
+The search engine stays a global setting: no endpoint accepts a per-request mode. Query mistakes (invalid regex, malformed FTS5) return `400` rather than `500`, so the dashboard can show them inline instead of as an outage.
+
+**Analytics** are computed in SQL against the same scope as every other read path — live root sessions inside the retention window — so deleting a session immediately changes the totals. The aggregate includes per-agent usage, dense daily buckets (days with no captures are present with zero counts), a weekday×hour heatmap, byte percentiles (median/p95), a size histogram, the busiest sessions, and the database file size on disk.
+
+**Frontend**: `internal/web/static/` ships `index.html`, `app.css`, and `app.js` with no build step and no CDN. The page renders identically offline; charts are hand-built inline SVG. That is enforced by the CSP: `default-src 'none'` with `script-src 'self'` (no inline script). `style-src` additionally allows inline attributes because chart marks carry their colour in a `style` attribute, which cannot execute. All dashboard actions dispatch through `data-action` attributes and event delegation, so no session id is ever concatenated into executable markup.
 
 At startup the dashboard generates a random 256-bit token and prints `http://<loopback>/?token=<token>`. A valid bootstrap request sets an `HttpOnly`, `SameSite=Strict` session cookie and redirects to `/`, removing the token from the current URL. All other routes require that cookie. The outer handler also requires a loopback `Host` and, when `Origin` is present, an exact same-origin loopback value; this rejects DNS-rebinding Host values and cross-origin browser requests. Requests without `Origin` remain valid only with the token cookie. Responses use `no-store`, `no-referrer`, `nosniff`, frame denial, and same-origin resource headers.
 

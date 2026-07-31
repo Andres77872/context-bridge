@@ -687,3 +687,102 @@ func callTool(t *testing.T, srv interface {
 	}
 	return toolResponse{Text: resp.Result.Content[0].Text, IsError: resp.Result.IsError}
 }
+
+// TestRenderFunctionsMatchToolOutputByteForByte is the contract that lets other
+// surfaces show "what the agent received". The dashboard and TUI call
+// RenderList/RenderRead/RenderSearch; if those ever drift from what the tool
+// handlers return over the wire, the surfaces would be lying about what the
+// model actually saw.
+func TestRenderFunctionsMatchToolOutputByteForByte(t *testing.T) {
+	st := openTestStore(t)
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
+		childSessionID: "ses-child-1",
+		callID:         "call-1",
+		agent:          "grep",
+		description:    "Map codebase",
+		content:        "authentication handler body\nsecond line",
+	})
+	seedCapture(t, st, "ses-root", 2, time.Date(2026, 3, 22, 8, 5, 0, 0, time.UTC), seededCapture{
+		childSessionID: "ses-child-2",
+		callID:         "call-2",
+		agent:          "explore",
+		description:    "Verify architecture",
+		content:        "explore body",
+	})
+
+	for _, mode := range []store.SearchMode{store.SearchModeRegex, store.SearchModeFTS5} {
+		t.Run(string(mode), func(t *testing.T) {
+			srv := New(st, "test", mode)
+			ctx := context.Background()
+
+			listText, err := RenderList(ctx, st, "ses-root", "")
+			if err != nil {
+				t.Fatalf("RenderList: %v", err)
+			}
+			if got := callTool(t, srv, "list", map[string]any{"session_id": "ses-root"}); got.Text != listText {
+				t.Fatalf("list tool output differs from RenderList.\ntool:\n%s\nrender:\n%s", got.Text, listText)
+			}
+
+			readText, err := RenderRead(ctx, st, "ses-root", 1)
+			if err != nil {
+				t.Fatalf("RenderRead: %v", err)
+			}
+			if got := callTool(t, srv, "read", map[string]any{"session_id": "ses-root", "output": 1}); got.Text != readText {
+				t.Fatalf("read tool output differs from RenderRead.\ntool:\n%s\nrender:\n%s", got.Text, readText)
+			}
+
+			searchText, err := RenderSearch(ctx, st, "ses-root", "authentication", DefaultSearchContextLines, mode)
+			if err != nil {
+				t.Fatalf("RenderSearch: %v", err)
+			}
+			got := callTool(t, srv, "search", map[string]any{"session_id": "ses-root", "query": "authentication"})
+			if got.Text != searchText {
+				t.Fatalf("search tool output differs from RenderSearch.\ntool:\n%s\nrender:\n%s", got.Text, searchText)
+			}
+
+			// And the empty paths, which take a different branch.
+			emptyList, err := RenderList(ctx, st, "ses-empty", "")
+			if err != nil {
+				t.Fatalf("RenderList(empty): %v", err)
+			}
+			if got := callTool(t, srv, "list", map[string]any{"session_id": "ses-empty"}); got.Text != emptyList {
+				t.Fatalf("empty list output differs.\ntool:\n%s\nrender:\n%s", got.Text, emptyList)
+			}
+
+			emptySearch, err := RenderSearch(ctx, st, "ses-root", "zzzznomatch", DefaultSearchContextLines, mode)
+			if err != nil {
+				t.Fatalf("RenderSearch(empty): %v", err)
+			}
+			if got := callTool(t, srv, "search", map[string]any{"session_id": "ses-root", "query": "zzzznomatch"}); got.Text != emptySearch {
+				t.Fatalf("empty search output differs.\ntool:\n%s\nrender:\n%s", got.Text, emptySearch)
+			}
+		})
+	}
+}
+
+func TestRenderReadKeepsTheTrustBoundaryAndStoredDocument(t *testing.T) {
+	st := openTestStore(t)
+	seedCapture(t, st, "ses-root", 1, time.Date(2026, 3, 22, 8, 0, 0, 0, time.UTC), seededCapture{
+		callID:      "call-1",
+		agent:       "grep",
+		description: "Map codebase",
+		content:     "the agent output body",
+	})
+
+	text, err := RenderRead(context.Background(), st, "ses-root", 1)
+	if err != nil {
+		t.Fatalf("RenderRead: %v", err)
+	}
+	for _, want := range []string{
+		"<untrusted-context-bridge-data>",
+		"</untrusted-context-bridge-data>",
+		"## Output #1: [grep] Map codebase",
+		"# Context Bridge: grep subagent output",
+		"> **Call ID**: call-1",
+		"the agent output body",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("read payload must contain %q, got:\n%s", want, text)
+		}
+	}
+}

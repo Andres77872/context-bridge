@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+umask 077
 
 REPO="${REPO:-Andres77872/context-bridge}"
 BINARY_NAME="${BINARY_NAME:-context-bridge}"
@@ -8,6 +9,10 @@ NO_CHECKSUM="${NO_CHECKSUM:-0}"
 
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "need $1 but it's not available"
+}
 
 need_cmd_any() {
   for cmd in "$@"; do
@@ -37,21 +42,34 @@ detect_arch() {
 http_get() {
   url="$1"
   out="${2:-}"
-  auth_header=""
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    auth_header="-H \"Authorization: Bearer ${GITHUB_TOKEN}\""
-  fi
   if command -v curl >/dev/null 2>&1; then
-    if [ -n "$out" ]; then
-      eval curl -fsSL "$auth_header" -o "\"\$out\"" "\"\$url\""
-    else
-      eval curl -fsSL "$auth_header" "\"\$url\""
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      case "$GITHUB_TOKEN" in
+        *[!A-Za-z0-9._-]*) die "GITHUB_TOKEN contains unsupported characters" ;;
+      esac
     fi
-  elif command -v wget >/dev/null 2>&1; then
     if [ -n "$out" ]; then
-      eval wget -qO "\"\$out\"" "$auth_header" "\"\$url\""
+      if [ -n "${GITHUB_TOKEN:-}" ]; then
+        if printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" | curl -fsSL --config - -o "$out" "$url"; then status=0; else status=$?; fi
+      else
+        if curl -fsSL -o "$out" "$url"; then status=0; else status=$?; fi
+      fi
     else
-      eval wget -qO- "$auth_header" "\"\$url\""
+      if [ -n "${GITHUB_TOKEN:-}" ]; then
+        if printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" | curl -fsSL --config - "$url"; then status=0; else status=$?; fi
+      else
+        if curl -fsSL "$url"; then status=0; else status=$?; fi
+      fi
+    fi
+    return "$status"
+  elif command -v wget >/dev/null 2>&1; then
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      die "authenticated downloads require curl so the token is not exposed in process arguments"
+    fi
+    if [ -n "$out" ]; then
+      wget -qO "$out" "$url"
+    else
+      wget -qO- "$url"
     fi
   else
     die "need curl or wget"
@@ -95,11 +113,22 @@ normalize_version() {
 
 main() {
   need_cmd_any curl wget
-  need_cmd_any sha256sum shasum
-  need_cmd_any uname mktemp awk sed tar find head
+  for cmd in uname mktemp awk sed tar find head chmod; do
+    need_cmd "$cmd"
+  done
 
   os=$(detect_os)
   arch=$(detect_arch)
+
+  case "$BINARY_NAME" in
+    ""|.|..|*/*|*\\*|*[!A-Za-z0-9._-]*) die "BINARY_NAME must be a safe basename" ;;
+  esac
+  case "$REPO" in
+    */*) repo_owner=${REPO%%/*}; repo_name=${REPO#*/} ;;
+    *) die "REPO must use owner/repository form" ;;
+  esac
+  case "$repo_owner" in ""|*[!A-Za-z0-9._-]*) die "REPO owner contains unsupported characters" ;; esac
+  case "$repo_name" in ""|*/*|*[!A-Za-z0-9._-]*) die "REPO name contains unsupported characters" ;; esac
 
   if [ "$VERSION" = "latest" ]; then
     tag=$(latest_tag)
@@ -113,6 +142,9 @@ main() {
       *) tag="v$tag" ;;
     esac
   fi
+  case "$tag" in
+    ""|*[!A-Za-z0-9._-]*) die "release tag contains unsupported characters" ;;
+  esac
 
   archive_version=$(normalize_version "$tag")
   archive_name="${BINARY_NAME}_${archive_version}_${os}_${arch}.tar.gz"
@@ -125,6 +157,7 @@ main() {
   http_get "${base_url}/${archive_name}" "$workdir/$archive_name"
 
   if [ "$NO_CHECKSUM" != "1" ]; then
+    need_cmd_any sha256sum shasum
     http_get "${base_url}/${checksums_name}" "$workdir/$checksums_name"
     verify_checksum "$workdir/$archive_name" "$workdir/$checksums_name"
     log "Checksum verified"
@@ -143,7 +176,20 @@ main() {
 
   chmod 0755 "$binary"
   log "Running hosted uninstall with temporary ${BINARY_NAME} ${tag}"
-  CONTEXT_BRIDGE_UNINSTALL_EXCLUDE_PATH="$binary" "$binary" uninstall "$@"
+  noninteractive=0
+  for arg in "$@"; do
+    case "$arg" in
+      --yes|--dry-run|--dry-run=true) noninteractive=1 ;;
+    esac
+  done
+
+  if [ "$noninteractive" = "1" ]; then
+    CONTEXT_BRIDGE_UNINSTALL_EXCLUDE_PATH="$binary" "$binary" uninstall "$@"
+  elif { : </dev/tty; } 2>/dev/null; then
+    CONTEXT_BRIDGE_UNINSTALL_EXCLUDE_PATH="$binary" "$binary" uninstall "$@" </dev/tty
+  else
+    die "interactive uninstall requires a terminal; rerun with explicit --mode and --yes arguments"
+  fi
 }
 
 main "$@"

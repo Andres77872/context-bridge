@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 
 func TestHealthEndpoint(t *testing.T) {
 	st := openTestStore(t)
-	srv := New(st, store.SearchModeRegex)
+	srv := NewWithVersion(st, store.SearchModeRegex, "v1.2.3")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -28,6 +29,75 @@ func TestHealthEndpoint(t *testing.T) {
 	decodeJSON(t, rec.Body.Bytes(), &body)
 	if ok, _ := body["ok"].(bool); !ok {
 		t.Fatalf("expected ok=true, got %v", body)
+	}
+	if body["service"] != "context-bridge" {
+		t.Fatalf("expected service identity, got %v", body)
+	}
+	if body["protocol"] != float64(1) {
+		t.Fatalf("expected protocol=1, got %v", body)
+	}
+	if body["version"] != "v1.2.3" {
+		t.Fatalf("expected version v1.2.3, got %v", body)
+	}
+}
+
+func TestShutdownEndpointAcknowledgesAndSignals(t *testing.T) {
+	st := openTestStore(t)
+	requested := make(chan struct{}, 1)
+	srv := NewWithVersionAndShutdown(st, store.SearchModeRegex, "test", func() { requested <- struct{}{} })
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-requested:
+	default:
+		t.Fatal("expected shutdown callback")
+	}
+}
+
+func TestMutationEndpointsRejectBrowserAndNonJSONRequests(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex)
+
+	for _, path := range []string{"/events", "/capture"} {
+		t.Run(path+"-non-json", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "text/plain")
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Fatalf("expected 415, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+
+		t.Run(path+"-browser-origin", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", "https://attacker.invalid")
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestEventsRequestBodyIsBounded(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex)
+	req := httptest.NewRequest(http.MethodPost, "/events", strings.NewReader(`{"type":"session.created","padding":"`+strings.Repeat("x", maxEventRequestBytes)+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -157,8 +227,11 @@ func TestHintEndpointReturnsRenderedHint(t *testing.T) {
 		Text string `json:"text"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &body)
-	if !strings.Contains(body.Text, "[#1] [grep] Map codebase") {
+	if !strings.Contains(body.Text, `- output #1; agent=grep`) {
 		t.Fatalf("expected numbered hint entry, got %q", body.Text)
+	}
+	if strings.Contains(body.Text, "Map codebase") {
+		t.Fatalf("hint must not expose free-form task descriptions, got %q", body.Text)
 	}
 	if !strings.Contains(body.Text, "read") {
 		t.Fatalf("expected MCP guidance in hint, got %q", body.Text)
@@ -175,7 +248,11 @@ type seededCapture struct {
 
 func openTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "server.db")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("secure temp directory: %v", err)
+	}
+	dbPath := filepath.Join(dir, "server.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)

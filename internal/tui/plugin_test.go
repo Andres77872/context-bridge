@@ -1,17 +1,26 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"context-bridge/internal/opencode"
 )
 
 func TestInstallPluginCmdPatchesResolvedBinaryCommand(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	testHome := t.TempDir()
+	configHome := testHome
+	if runtime.GOOS == "darwin" {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("HOME", testHome)
+		configHome = filepath.Join(testHome, "Library", "Application Support")
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", configHome)
+	}
 
 	msg, ok := installPluginCmd()().(pluginInstalledMsg)
 	if !ok {
@@ -41,19 +50,15 @@ func TestInstallPluginCmdPatchesResolvedBinaryCommand(t *testing.T) {
 		t.Fatalf("expected plugin file to replace the default fallback command, got:\n%s", string(data))
 	}
 
-	configPath := filepath.Join(configHome, "opencode", "opencode.json")
-	config := readPluginConfig(t, configPath)
-	mcp := decodePluginMCPBlock(t, config)
-	entry := decodePluginMCPEntry(t, mcp["context-bridge"])
-	command, ok := entry["command"].([]any)
-	if !ok {
-		t.Fatalf("expected command array, got %#v", entry["command"])
+	status, err := opencode.InspectIntegration()
+	if err != nil {
+		t.Fatalf("inspect integration: %v", err)
 	}
-	if len(command) != 2 || command[0] != resolvedCommand || command[1] != "mcp" {
-		t.Fatalf("unexpected command: %#v", command)
+	if status.State != opencode.StateOwnedCurrent {
+		t.Fatalf("expected TUI install to create an owned adapter, got %+v", status)
 	}
-	if entry["enabled"] != true {
-		t.Fatalf("expected enabled=true, got %#v", entry["enabled"])
+	if _, err := os.Stat(filepath.Join(configHome, "opencode", "opencode.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected TUI install not to create or rewrite opencode.json, stat err=%v", err)
 	}
 }
 
@@ -63,45 +68,7 @@ func expectedBridgeBinLine(command string) string {
 	}
 
 	return fmt.Sprintf(
-		`const BRIDGE_BIN = process.env.CONTEXT_BRIDGE_BIN ?? Bun.which("context-bridge") ?? %q;`,
+		`const BRIDGE_BIN = process.env.CONTEXT_BRIDGE_BIN ?? %q;`,
 		command,
 	)
-}
-
-func readPluginConfig(t *testing.T, path string) map[string]json.RawMessage {
-	t.Helper()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read plugin config: %v", err)
-	}
-
-	var config map[string]json.RawMessage
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("unmarshal plugin config: %v\ncontent:\n%s", err, string(data))
-	}
-
-	return config
-}
-
-func decodePluginMCPBlock(t *testing.T, config map[string]json.RawMessage) map[string]json.RawMessage {
-	t.Helper()
-
-	var mcp map[string]json.RawMessage
-	if err := json.Unmarshal(config["mcp"], &mcp); err != nil {
-		t.Fatalf("unmarshal plugin mcp block: %v", err)
-	}
-
-	return mcp
-}
-
-func decodePluginMCPEntry(t *testing.T, raw json.RawMessage) map[string]any {
-	t.Helper()
-
-	var entry map[string]any
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		t.Fatalf("unmarshal plugin mcp entry: %v", err)
-	}
-
-	return entry
 }

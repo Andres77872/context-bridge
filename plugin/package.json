@@ -1,0 +1,13 @@
+{
+  "name": "context-bridge-opencode-adapter",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.3",
+    "@types/bun": "1.3.13",
+    "typescript": "5.8.2"
+  }
+}

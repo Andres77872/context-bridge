@@ -1,354 +1,372 @@
 package opencode
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestInstallPluginWritesPatchedBinaryAndRemovePluginDeletesIt(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+func TestInstallAndRemovePluginPreserveOpenCodeConfig(t *testing.T) {
+	configHome := setTestUserConfigHome(t, t.TempDir())
+	binaryPath := writeTestBinary(t)
 
-	pluginPath, err := InstallPlugin("/abs/path/context-bridge")
+	openCodeConfig := filepath.Join(configHome, "opencode", "opencode.json")
+	originalConfig := []byte("{\n  // keep comments and secrets byte-for-byte\n  \"mcp\": {\"context-bridge\": {\"enabled\": true}}\n}\n")
+	writeTestFile(t, openCodeConfig, originalConfig)
+
+	pluginPath, err := InstallOwnedPlugin(binaryPath)
 	if err != nil {
 		t.Fatalf("install plugin: %v", err)
 	}
-
 	expectedPath := filepath.Join(configHome, "opencode", "plugins", "context-bridge.ts")
 	if pluginPath != expectedPath {
 		t.Fatalf("expected plugin path %q, got %q", expectedPath, pluginPath)
 	}
 
-	data, err := os.ReadFile(pluginPath)
+	status, err := InspectIntegration()
 	if err != nil {
-		t.Fatalf("read plugin file: %v", err)
+		t.Fatalf("inspect installed integration: %v", err)
+	}
+	if status.State != StateOwnedCurrent {
+		t.Fatalf("expected owned-current state, got %+v", status)
+	}
+	if status.BinaryPath != binaryPath || status.BinarySHA256 == "" {
+		t.Fatalf("expected binary ownership to be recorded, got %+v", status)
+	}
+	manifestInfo, err := os.Stat(status.ManifestPath)
+	if err != nil {
+		t.Fatalf("stat manifest: %v", err)
+	}
+	if manifestInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("expected manifest mode 0600, got %o", manifestInfo.Mode().Perm())
 	}
 
-	if !strings.Contains(string(data), `?? "/abs/path/context-bridge";`) {
-		t.Fatalf("expected patched plugin to contain absolute binary path, got:\n%s", string(data))
-	}
-
+	assertFileBytes(t, openCodeConfig, originalConfig)
 	removed, removedPath, err := RemovePlugin()
 	if err != nil {
 		t.Fatalf("remove plugin: %v", err)
 	}
-	if !removed {
-		t.Fatalf("expected plugin removal to report success")
+	if !removed || removedPath != pluginPath {
+		t.Fatalf("unexpected removal result: removed=%v path=%q", removed, removedPath)
 	}
-	if removedPath != pluginPath {
-		t.Fatalf("expected removed path %q, got %q", pluginPath, removedPath)
-	}
-	if _, err := os.Stat(pluginPath); !os.IsNotExist(err) {
-		t.Fatalf("expected plugin file to be removed, stat err=%v", err)
-	}
+	assertMissing(t, pluginPath)
+	assertMissing(t, status.ManifestPath)
+	assertFileBytes(t, openCodeConfig, originalConfig)
+}
 
-	removed, removedPath, err = RemovePlugin()
+func TestOpenCodePathsTrimAndCanonicalizeXDGConfigHome(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("XDG config paths are a Linux contract")
+	}
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "  "+filepath.Join(root, "nested", "..", "config")+"  ")
+
+	configDir, err := OpenCodeConfigDir()
 	if err != nil {
-		t.Fatalf("second remove plugin: %v", err)
+		t.Fatalf("resolve OpenCode config directory: %v", err)
 	}
-	if removed {
-		t.Fatalf("expected second plugin removal to be a no-op")
+	if want := filepath.Join(root, "config", "opencode"); configDir != want {
+		t.Fatalf("expected canonical OpenCode config directory %q, got %q", want, configDir)
 	}
-	if removedPath != pluginPath {
-		t.Fatalf("expected noop remove path %q, got %q", pluginPath, removedPath)
-	}
-}
-
-func TestEnsureMCPRegistrationCreatesJSONConfigWhenMissing(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-
-	if err := EnsureMCPRegistration([]string{"/abs/context-bridge", "mcp"}); err != nil {
-		t.Fatalf("ensure mcp registration: %v", err)
-	}
-
-	configPath := filepath.Join(configHome, "opencode", "opencode.json")
-	config := readOpenCodeConfig(t, configPath)
-	mcp := decodeMCPBlock(t, config)
-
-	entry := decodeMCPEntry(t, mcp["context-bridge"])
-	if entry["type"] != "local" {
-		t.Fatalf("expected type local, got %#v", entry["type"])
-	}
-	if entry["enabled"] != true {
-		t.Fatalf("expected enabled=true, got %#v", entry["enabled"])
-	}
-	command, ok := entry["command"].([]any)
-	if !ok {
-		t.Fatalf("expected command array, got %#v", entry["command"])
-	}
-	if len(command) != 2 || command[0] != "/abs/context-bridge" || command[1] != "mcp" {
-		t.Fatalf("unexpected command: %#v", command)
-	}
-	if _, err := os.Stat(filepath.Join(configHome, "opencode", "opencode.jsonc")); !os.IsNotExist(err) {
-		t.Fatalf("expected opencode.jsonc to stay absent, stat err=%v", err)
-	}
-}
-
-func TestEnsureMCPRegistrationPrefersJSONCAndPreservesSiblingEntries(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-
-	configPath := filepath.Join(configHome, "opencode", "opencode.jsonc")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	if err := os.WriteFile(configPath, []byte(`{
-		// existing config
-		"theme": "dark",
-		"mcp": {
-			"other": {"type": "remote", "enabled": false}
-		}
-	}`), 0644); err != nil {
-		t.Fatalf("write jsonc config: %v", err)
-	}
-
-	if err := EnsureMCPRegistration([]string{"/abs/context-bridge", "mcp"}); err != nil {
-		t.Fatalf("ensure mcp registration: %v", err)
-	}
-
-	config := readOpenCodeConfig(t, configPath)
-	if theme := decodeStringRaw(t, config["theme"]); theme != "dark" {
-		t.Fatalf("expected theme to be preserved, got %q", theme)
-	}
-
-	mcp := decodeMCPBlock(t, config)
-	if _, ok := mcp["other"]; !ok {
-		t.Fatalf("expected sibling mcp entry to be preserved")
-	}
-	if _, ok := mcp["context-bridge"]; !ok {
-		t.Fatalf("expected context-bridge mcp entry to be added")
-	}
-}
-
-func TestEnsureMCPRegistrationPrefersJSONCOverJSONWhenBothExist(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-
-	jsoncPath := filepath.Join(configHome, "opencode", "opencode.jsonc")
-	writeJSONConfig(t, jsoncPath, `{
-		"theme": "dark",
-		"mcp": {
-			"other": {"type": "remote", "enabled": false}
-		}
-	}`)
-
-	jsonPath := filepath.Join(configHome, "opencode", "opencode.json")
-	writeJSONConfig(t, jsonPath, `{
-		"theme": "light"
-	}`)
-
-	if err := EnsureMCPRegistration([]string{"/abs/context-bridge", "mcp"}); err != nil {
-		t.Fatalf("ensure mcp registration: %v", err)
-	}
-
-	jsoncConfig := readOpenCodeConfig(t, jsoncPath)
-	if theme := decodeStringRaw(t, jsoncConfig["theme"]); theme != "dark" {
-		t.Fatalf("expected jsonc theme to stay dark, got %q", theme)
-	}
-	jsoncMCP := decodeMCPBlock(t, jsoncConfig)
-	if _, ok := jsoncMCP["other"]; !ok {
-		t.Fatalf("expected sibling jsonc mcp entry to be preserved")
-	}
-	if _, ok := jsoncMCP["context-bridge"]; !ok {
-		t.Fatalf("expected context-bridge entry to be added to jsonc config")
-	}
-
-	jsonConfig := readOpenCodeConfig(t, jsonPath)
-	if theme := decodeStringRaw(t, jsonConfig["theme"]); theme != "light" {
-		t.Fatalf("expected json fallback file to remain untouched, got %q", theme)
-	}
-	if _, ok := jsonConfig["mcp"]; ok {
-		t.Fatalf("expected json fallback file to remain untouched")
-	}
-}
-
-func TestRemoveMCPRegistrationRemovesOnlyContextBridgeEntry(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-
-	configPath := filepath.Join(configHome, "opencode", "opencode.json")
-	writeJSONConfig(t, configPath, `{
-		"theme": "dark",
-		"mcp": {
-			"context-bridge": {"type": "local", "command": ["context-bridge", "mcp"], "enabled": true},
-			"other": {"type": "remote", "enabled": false}
-		}
-	}`)
-
-	removed, removedPath, err := RemoveMCPRegistration()
+	manifestPath, err := IntegrationManifestPath()
 	if err != nil {
-		t.Fatalf("remove mcp registration: %v", err)
+		t.Fatalf("resolve integration manifest path: %v", err)
 	}
-	if !removed {
-		t.Fatalf("expected mcp registration removal to report success")
-	}
-	if removedPath != configPath {
-		t.Fatalf("expected config path %q, got %q", configPath, removedPath)
-	}
-
-	config := readOpenCodeConfig(t, configPath)
-	if theme := decodeStringRaw(t, config["theme"]); theme != "dark" {
-		t.Fatalf("expected theme to be preserved, got %q", theme)
-	}
-	mcp := decodeMCPBlock(t, config)
-	if _, ok := mcp["context-bridge"]; ok {
-		t.Fatalf("expected context-bridge entry to be removed")
-	}
-	if _, ok := mcp["other"]; !ok {
-		t.Fatalf("expected sibling mcp entry to remain")
+	if want := filepath.Join(root, "config", "context-bridge", "opencode-integration.json"); manifestPath != want {
+		t.Fatalf("expected canonical manifest path %q, got %q", want, manifestPath)
 	}
 }
 
-func TestRemoveMCPRegistrationDeletesEmptyMCPBlock(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+func TestOpenCodePathsTreatWhitespaceOnlyXDGConfigHomeAsUnset(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("XDG config defaults are a Linux contract")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "  \t  ")
 
-	configPath := filepath.Join(configHome, "opencode", "opencode.json")
-	writeJSONConfig(t, configPath, `{
-		"theme": "dark",
-		"mcp": {
-			"context-bridge": {"type": "local", "command": ["context-bridge", "mcp"], "enabled": true}
-		}
-	}`)
-
-	removed, _, err := RemoveMCPRegistration()
+	configDir, err := OpenCodeConfigDir()
 	if err != nil {
-		t.Fatalf("remove mcp registration: %v", err)
+		t.Fatalf("resolve OpenCode config directory: %v", err)
 	}
-	if !removed {
-		t.Fatalf("expected mcp registration removal to report success")
+	if want := filepath.Join(home, ".config", "opencode"); configDir != want {
+		t.Fatalf("expected whitespace-only XDG config home to use %q, got %q", want, configDir)
 	}
-
-	config := readOpenCodeConfig(t, configPath)
-	if _, ok := config["mcp"]; ok {
-		t.Fatalf("expected empty mcp block to be removed")
-	}
-	if theme := decodeStringRaw(t, config["theme"]); theme != "dark" {
-		t.Fatalf("expected theme to remain, got %q", theme)
-	}
-}
-
-func TestRemoveMCPRegistrationPrefersJSONCOverJSON(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-
-	jsoncPath := filepath.Join(configHome, "opencode", "opencode.jsonc")
-	writeJSONConfig(t, jsoncPath, `{
-		"theme": "dark",
-		"mcp": {
-			"context-bridge": {"type": "local", "command": ["context-bridge", "mcp"], "enabled": true},
-			"other": {"type": "remote", "enabled": false}
-		}
-	}`)
-
-	jsonPath := filepath.Join(configHome, "opencode", "opencode.json")
-	writeJSONConfig(t, jsonPath, `{
-		"theme": "light",
-		"mcp": {
-			"context-bridge": {"type": "local", "command": ["old", "mcp"], "enabled": true}
-		}
-	}`)
-
-	removed, removedPath, err := RemoveMCPRegistration()
+	manifestPath, err := IntegrationManifestPath()
 	if err != nil {
-		t.Fatalf("remove mcp registration: %v", err)
+		t.Fatalf("resolve integration manifest path: %v", err)
 	}
-	if !removed {
-		t.Fatalf("expected mcp registration removal to report success")
-	}
-	if removedPath != jsoncPath {
-		t.Fatalf("expected removal to target jsonc path %q, got %q", jsoncPath, removedPath)
-	}
-
-	jsoncConfig := readOpenCodeConfig(t, jsoncPath)
-	jsoncMCP := decodeMCPBlock(t, jsoncConfig)
-	if _, ok := jsoncMCP["context-bridge"]; ok {
-		t.Fatalf("expected context-bridge entry to be removed from jsonc config")
-	}
-	if _, ok := jsoncMCP["other"]; !ok {
-		t.Fatalf("expected sibling jsonc mcp entry to remain")
-	}
-
-	jsonConfig := readOpenCodeConfig(t, jsonPath)
-	jsonMCP := decodeMCPBlock(t, jsonConfig)
-	if _, ok := jsonMCP["context-bridge"]; !ok {
-		t.Fatalf("expected json fallback file to remain untouched")
+	if want := filepath.Join(home, ".config", "context-bridge", "opencode-integration.json"); manifestPath != want {
+		t.Fatalf("expected whitespace-only XDG manifest path %q, got %q", want, manifestPath)
 	}
 }
 
-func TestRemoveMCPRegistrationIsNoopWhenConfigMissing(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+func TestOpenCodePathsRejectRelativeXDGConfigHome(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("XDG config paths are a Linux contract")
+	}
+	t.Setenv("XDG_CONFIG_HOME", " relative-config ")
 
-	removed, removedPath, err := RemoveMCPRegistration()
+	if path, err := OpenCodeConfigDir(); err == nil || path != "" {
+		t.Fatalf("expected relative XDG config home to fail closed, path=%q err=%v", path, err)
+	}
+	if path, err := IntegrationManifestPath(); err == nil || path != "" {
+		t.Fatalf("expected relative XDG config home to fail manifest resolution, path=%q err=%v", path, err)
+	}
+	if path, err := cleanAbsolutePath("relative/plugin.ts"); err == nil || path != "" {
+		t.Fatalf("expected relative path to be rejected instead of cwd-expanded, path=%q err=%v", path, err)
+	}
+}
+
+func TestInstallRefusesForeignPluginAndLeavesItUntouched(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	pluginPath, err := OpenCodePluginPath()
 	if err != nil {
-		t.Fatalf("remove missing mcp registration: %v", err)
+		t.Fatalf("resolve plugin path: %v", err)
 	}
-	if removed {
-		t.Fatalf("expected missing config removal to be a no-op")
+	foreign := []byte("export default { owner: 'someone-else' };\n")
+	writeTestFile(t, pluginPath, foreign)
+
+	if _, err := InstallPlugin(writeTestBinary(t)); err == nil || !strings.Contains(err.Error(), "foreign") {
+		t.Fatalf("expected foreign plugin conflict, got %v", err)
 	}
-	if removedPath != "" {
-		t.Fatalf("expected empty removed path, got %q", removedPath)
+	if _, _, err := RemovePlugin(); err == nil || !strings.Contains(err.Error(), "foreign") {
+		t.Fatalf("expected foreign plugin removal refusal, got %v", err)
+	}
+	assertFileBytes(t, pluginPath, foreign)
+}
+
+func TestInstallRefusesSymlinkPlugin(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	pluginPath, err := OpenCodePluginPath()
+	if err != nil {
+		t.Fatalf("resolve plugin path: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "foreign.ts")
+	foreign := []byte("foreign\n")
+	writeTestFile(t, target, foreign)
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
+		t.Fatalf("create plugin dir: %v", err)
+	}
+	if err := os.Symlink(target, pluginPath); err != nil {
+		t.Fatalf("create plugin symlink: %v", err)
+	}
+
+	if _, err := InstallPlugin(writeTestBinary(t)); err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("expected symlink refusal, got %v", err)
+	}
+	assertFileBytes(t, target, foreign)
+}
+
+func TestModifiedOwnedPluginCannotBeOverwrittenOrRemoved(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	pluginPath, err := InstallPlugin(writeTestBinary(t))
+	if err != nil {
+		t.Fatalf("install plugin: %v", err)
+	}
+	modified := []byte("user modification\n")
+	writeTestFile(t, pluginPath, modified)
+
+	if _, err := InstallPlugin(writeTestBinary(t)); err == nil || !strings.Contains(err.Error(), "modified") {
+		t.Fatalf("expected modified plugin install refusal, got %v", err)
+	}
+	if _, _, err := RemovePlugin(); err == nil || !strings.Contains(err.Error(), "modified") {
+		t.Fatalf("expected modified plugin removal refusal, got %v", err)
+	}
+	assertFileBytes(t, pluginPath, modified)
+}
+
+func TestRecognizedUnmanagedAdapterIsAdopted(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	pluginPath, err := OpenCodePluginPath()
+	if err != nil {
+		t.Fatalf("resolve plugin path: %v", err)
+	}
+	legacy, err := os.ReadFile(filepath.Join("testdata", "legacy-context-bridge.ts"))
+	if err != nil {
+		t.Fatalf("read legacy plugin fixture: %v", err)
+	}
+	normalizedSHA, recognized := normalizedPluginSHA256(legacy)
+	if !recognized || normalizedSHA != legacyPluginSHA256 {
+		t.Fatalf("legacy fixture hash drifted: recognized=%v sha=%s", recognized, normalizedSHA)
+	}
+	writeTestFile(t, pluginPath, legacy)
+
+	status, err := InspectIntegration()
+	if err != nil {
+		t.Fatalf("inspect legacy integration: %v", err)
+	}
+	if status.State != StateLegacyAdoptable {
+		t.Fatalf("expected legacy-adoptable state, got %+v", status)
+	}
+	if _, err := InstallPlugin(writeTestBinary(t)); err != nil {
+		t.Fatalf("adopt legacy plugin: %v", err)
+	}
+	status, err = InspectIntegration()
+	if err != nil || status.State != StateOwnedCurrent {
+		t.Fatalf("expected adopted plugin to be owned-current, status=%+v err=%v", status, err)
 	}
 }
 
-func readOpenCodeConfig(t *testing.T, path string) map[string]json.RawMessage {
+func TestOwnedBinaryRequiresManifestHashMatch(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	binaryPath := writeTestBinary(t)
+	if _, err := InstallOwnedPlugin(binaryPath); err != nil {
+		t.Fatalf("install plugin: %v", err)
+	}
+
+	owned, expectedSHA, err := OwnedBinary(binaryPath)
+	if err != nil || !owned || expectedSHA == "" {
+		t.Fatalf("expected owned binary, owned=%v sha=%q err=%v", owned, expectedSHA, err)
+	}
+	writeTestFile(t, binaryPath, []byte("modified binary\n"))
+	owned, _, err = OwnedBinary(binaryPath)
+	if err != nil {
+		t.Fatalf("inspect modified binary: %v", err)
+	}
+	if owned {
+		t.Fatal("expected modified binary to lose ownership match")
+	}
+}
+
+func TestOwnedBinarySurvivesOrphanedAdapterForUninstallRetry(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	binaryPath := writeTestBinary(t)
+	pluginPath, err := InstallOwnedPlugin(binaryPath)
+	if err != nil {
+		t.Fatalf("install plugin: %v", err)
+	}
+	if err := os.Remove(pluginPath); err != nil {
+		t.Fatalf("remove adapter to create orphaned state: %v", err)
+	}
+
+	owned, expectedSHA, err := OwnedBinary(binaryPath)
+	if err != nil || !owned || expectedSHA == "" {
+		t.Fatalf("expected orphaned manifest to retain binary ownership, owned=%v sha=%q err=%v", owned, expectedSHA, err)
+	}
+}
+
+func TestManualInstallReferencesButDoesNotOwnBinary(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	binaryPath := writeTestBinary(t)
+	pluginPath, err := InstallPlugin(binaryPath)
+	if err != nil {
+		t.Fatalf("install manual integration: %v", err)
+	}
+	status, err := InspectIntegration()
+	if err != nil {
+		t.Fatalf("inspect manual integration: %v", err)
+	}
+	if status.BinaryPath != "" || status.BinarySHA256 != "" {
+		t.Fatalf("manual integration must not claim package-managed binary ownership: %+v", status)
+	}
+	pluginData, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("read installed adapter: %v", err)
+	}
+	if !strings.Contains(string(pluginData), binaryPath) {
+		t.Fatalf("adapter must still reference the validated binary path")
+	}
+}
+
+func TestBareCommandInstallNeverPatchesEmptyExecutable(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	pluginPath, err := InstallPlugin("context-bridge")
+	if err != nil {
+		t.Fatalf("install bare command integration: %v", err)
+	}
+	pluginData, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("read installed adapter: %v", err)
+	}
+	if !strings.Contains(string(pluginData), bridgeBINMarker) {
+		t.Fatalf("bare command install must preserve PATH resolution marker")
+	}
+}
+
+func TestRemoveMissingPluginIsNoop(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	removed, path, err := RemovePlugin()
+	if err != nil {
+		t.Fatalf("remove missing plugin: %v", err)
+	}
+	if removed || !strings.HasSuffix(path, filepath.Join("plugins", "context-bridge.ts")) {
+		t.Fatalf("unexpected missing-plugin result: removed=%v path=%q", removed, path)
+	}
+}
+
+func TestInstallRejectsUnsafeBinaryPathsBeforeWriting(t *testing.T) {
+	setTestUserConfigHome(t, t.TempDir())
+	nonExecutable := filepath.Join(t.TempDir(), "context-bridge")
+	writeTestFile(t, nonExecutable, []byte("not executable\n"))
+	symlink := filepath.Join(t.TempDir(), "context-bridge-link")
+	if err := os.Symlink(nonExecutable, symlink); err != nil {
+		t.Fatalf("create binary symlink: %v", err)
+	}
+
+	for _, path := range []string{"relative/context-bridge", filepath.Join(t.TempDir(), "missing"), nonExecutable, symlink} {
+		if _, err := InstallPlugin(path); err == nil {
+			t.Errorf("expected unsafe binary path %q to be rejected", path)
+		}
+	}
+	pluginPath, err := OpenCodePluginPath()
+	if err != nil {
+		t.Fatalf("resolve plugin path: %v", err)
+	}
+	assertMissing(t, pluginPath)
+}
+
+func setTestUserConfigHome(t *testing.T, root string) string {
 	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("HOME", root)
+		return filepath.Join(root, "Library", "Application Support")
+	}
+	t.Setenv("XDG_CONFIG_HOME", root)
+	return root
+}
 
-	data, err := os.ReadFile(path)
+func writeTestBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "context-bridge")
+	writeTestFile(t, path, []byte("test context-bridge binary\n"))
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("make test binary executable: %v", err)
+	}
+	return path
+}
+
+func writeTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func assertFileBytes(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read OpenCode config: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-
-	var config map[string]json.RawMessage
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("unmarshal OpenCode config: %v\ncontent:\n%s", err, string(data))
+	if string(got) != string(want) {
+		t.Fatalf("unexpected content for %s:\n%s", path, got)
 	}
-
-	return config
 }
 
-func decodeMCPBlock(t *testing.T, config map[string]json.RawMessage) map[string]json.RawMessage {
+func assertMissing(t *testing.T, path string) {
 	t.Helper()
-
-	var mcp map[string]json.RawMessage
-	if err := json.Unmarshal(config["mcp"], &mcp); err != nil {
-		t.Fatalf("unmarshal mcp block: %v", err)
+	if _, err := os.Lstat(path); !errorsIsNotExist(err) {
+		t.Fatalf("expected %s to be absent, stat err=%v", path, err)
 	}
-	return mcp
 }
 
-func decodeMCPEntry(t *testing.T, raw json.RawMessage) map[string]any {
-	t.Helper()
-
-	var entry map[string]any
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		t.Fatalf("unmarshal mcp entry: %v", err)
-	}
-	return entry
-}
-
-func decodeStringRaw(t *testing.T, raw json.RawMessage) string {
-	t.Helper()
-
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		t.Fatalf("unmarshal string value: %v", err)
-	}
-	return value
-}
-
-func writeJSONConfig(t *testing.T, path, content string) {
-	t.Helper()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+func errorsIsNotExist(err error) bool {
+	return err != nil && os.IsNotExist(err)
 }

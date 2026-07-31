@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+// normalizeProse lowercases content and collapses every run of whitespace to a
+// single space. Prose assertions run against this form so that a required
+// phrase is still found after a paragraph is re-wrapped, and so documentation
+// is never contorted to keep a literal substring on one line.
+func normalizeProse(content string) string {
+	return strings.Join(strings.Fields(strings.ToLower(content)), " ")
+}
+
 // repoRoot returns the repository root directory.
 // Uses environment variable if set, otherwise walks up from current directory.
 func repoRoot(t *testing.T) string {
@@ -237,15 +245,17 @@ func TestVectorSearchDocIsPlaceholderOnly(t *testing.T) {
 		t.Errorf("vector-search.md must state 'NOT IMPLEMENTED' clearly")
 	}
 
-	// Must state future work / placeholder
+	// Must state future work / placeholder. Matched case-insensitively so the
+	// doc is not forced into mid-sentence capitalization to satisfy this test.
 	placeholderPhrases := []string{
-		"Future work",
+		"future work",
 		"placeholder",
-		"TBD",
+		"tbd",
 	}
+	lowerDoc := normalizeProse(content)
 	hasPlaceholder := false
 	for _, phrase := range placeholderPhrases {
-		if strings.Contains(content, phrase) {
+		if strings.Contains(lowerDoc, phrase) {
 			hasPlaceholder = true
 			break
 		}
@@ -493,17 +503,31 @@ func TestMCPContractSchemaMatchesRuntime(t *testing.T) {
 func TestMCPContractFTS5SemanticClaims(t *testing.T) {
 	content := readFile(t, "docs/search/mcp-tool-contract.md")
 
-	// MUST document literal-safe semantics
-	requiredClaims := []string{
+	// MUST document literal-safe semantics. Identifiers are matched exactly;
+	// prose is matched case-insensitively and by meaning rather than by an
+	// exact phrase, so the doc can be written naturally. Requiring literal
+	// sentence fragments here previously forced tautological wording.
+	exactClaims := []string{
 		"literal-safe",
 		"BuildLiteralFTS5Match",
-		"keywords separated by spaces",
-		"whitespace-separated keywords",
 	}
-	for _, claim := range requiredClaims {
+	for _, claim := range exactClaims {
 		if !strings.Contains(content, claim) {
 			t.Errorf("MCP contract doc must document %q for FTS5 literal semantics", claim)
 		}
+	}
+
+	// Prose is matched against a whitespace-normalized, lowercased copy so a
+	// phrase stays findable when the paragraph is re-wrapped.
+	lower := normalizeProse(content)
+
+	// The doc must explain both halves of the sanitizer's contract: input is
+	// split on whitespace, and each resulting term is quoted as data.
+	if !strings.Contains(lower, "whitespace") && !strings.Contains(lower, "space") {
+		t.Errorf("MCP contract doc must explain that FTS5 input is split on whitespace")
+	}
+	if !strings.Contains(lower, "quote") {
+		t.Errorf("MCP contract doc must explain that each FTS5 term is quoted as data")
 	}
 
 	// MUST NOT advertise unsupported FTS5 operators as available features
@@ -547,17 +571,17 @@ func TestMCPContractFTS5SemanticClaims(t *testing.T) {
 		}
 	}
 
-	// MUST document BM25 ordering semantics correctly
-	bm25Required := []string{
-		"BM25",
-		"relevance",
-		"rank",
-		"Lower (more negative)",
-		"Better match",
-	}
-	for _, term := range bm25Required {
+	// MUST document BM25 ordering semantics correctly. "BM25" and "rank" name
+	// concrete things and stay case-sensitive; the explanation of the ordering
+	// is checked case-insensitively.
+	for _, term := range []string{"BM25", "rank"} {
 		if !strings.Contains(content, term) {
 			t.Errorf("MCP contract doc must document BM25 semantics with term %q", term)
+		}
+	}
+	for _, phrase := range []string{"relevance", "more negative", "better match"} {
+		if !strings.Contains(lower, phrase) {
+			t.Errorf("MCP contract doc must explain BM25 ordering, including %q", phrase)
 		}
 	}
 

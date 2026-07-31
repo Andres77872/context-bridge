@@ -2,445 +2,630 @@ package uninstall
 
 import (
 	"bytes"
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"context-bridge/internal/opencode"
 )
 
-func TestBuildPlanDetectsReleaseAndGoInstallBinaries(t *testing.T) {
+func TestBuildPlanContainsOnlyManifestOwnedBinaryAndExactDataFiles(t *testing.T) {
 	fx := newUninstallFixture(t)
-
 	plan, err := BuildPlan("")
 	if err != nil {
 		t.Fatalf("build plan: %v", err)
 	}
 
-	release := findArtifact(plan.Artifacts, ArtifactBinary, fx.releaseBinary)
-	if release == nil {
-		t.Fatalf("expected release binary artifact for %q", fx.releaseBinary)
+	binary := findArtifact(plan.Artifacts, ArtifactBinary, fx.releaseBinary)
+	if binary == nil || !binary.Exists || binary.ExpectedSHA256 == "" {
+		t.Fatalf("expected manifest-owned binary artifact, got %+v", binary)
 	}
-	if !release.Exists {
-		t.Fatalf("expected release binary artifact to exist")
+	if findArtifact(plan.Artifacts, ArtifactBinary, fx.unownedBinary) != nil {
+		t.Fatalf("unowned conventional-path binary must not enter the plan")
 	}
-	if !release.SharedParent {
-		t.Fatalf("expected release binary to preserve shared parent directory")
+	if findArtifact(plan.Artifacts, ArtifactPluginFile, fx.pluginPath) == nil {
+		t.Fatalf("expected owned plugin artifact")
 	}
-
-	staleGo := findArtifact(plan.Artifacts, ArtifactBinary, fx.goBinary)
-	if staleGo == nil {
-		t.Fatalf("expected stale go-install binary artifact for %q", fx.goBinary)
+	status, err := opencode.InspectIntegration()
+	if err != nil {
+		t.Fatalf("inspect integration: %v", err)
 	}
-	if !staleGo.Exists {
-		t.Fatalf("expected stale go-install binary artifact to exist")
+	if findArtifact(plan.Artifacts, ArtifactManifest, status.ManifestPath) == nil {
+		t.Fatalf("expected ownership manifest artifact")
 	}
-	if !staleGo.SharedParent {
-		t.Fatalf("expected stale go-install binary to preserve shared parent directory")
+	if findArtifact(plan.Artifacts, ArtifactConfigFile, fx.configPath) == nil {
+		t.Fatalf("expected exact config file artifact")
 	}
-	if len(plan.Warnings) != 0 {
-		t.Fatalf("expected no warnings for dedicated uninstall fixture, got %v", plan.Warnings)
+	if findArtifact(plan.Artifacts, ArtifactDataFile, fx.dbPath) == nil {
+		t.Fatalf("expected exact DB file artifact")
 	}
-	if findArtifact(plan.Artifacts, ArtifactMCPEntry, fx.openCodeConfigPath) == nil {
-		t.Fatalf("expected MCP registration artifact for %q", fx.openCodeConfigPath)
+	for _, artifact := range plan.Artifacts {
+		if artifact.Path == fx.openCodeConfigPath {
+			t.Fatalf("OpenCode config must never enter the uninstall plan")
+		}
 	}
 }
 
-func TestRunFullModeRemovesFootprintAndPreservesSharedParents(t *testing.T) {
+func TestBuildPlanRejectsRelativeRuntimePaths(t *testing.T) {
+	envNames := []string{"CONTEXT_BRIDGE_CONFIG", "CONTEXT_BRIDGE_DB", "CONTEXT_BRIDGE_SOCKET", "XDG_DATA_HOME"}
+	if runtime.GOOS == "linux" {
+		envNames = append(envNames, "XDG_CONFIG_HOME")
+	}
+	for _, envName := range envNames {
+		t.Run(envName, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+			if runtime.GOOS == "darwin" {
+				t.Setenv("XDG_CONFIG_HOME", "")
+			} else {
+				t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+			}
+			t.Setenv("CONTEXT_BRIDGE_CONFIG", "")
+			t.Setenv("CONTEXT_BRIDGE_DB", "")
+			t.Setenv("CONTEXT_BRIDGE_SOCKET", "")
+			t.Setenv(envName, "relative/path")
+
+			if plan, err := BuildPlan(""); err == nil || len(plan.Artifacts) != 0 {
+				t.Fatalf("expected relative %s to fail before producing an uninstall plan, plan=%+v err=%v", envName, plan, err)
+			}
+		})
+	}
+}
+
+func TestRunFullRemovesOnlyOwnedAndExactFiles(t *testing.T) {
 	fx := newUninstallFixture(t)
 	var stdout bytes.Buffer
-
-	err := Run(Options{
-		Mode:      ModeFull,
-		AssumeYes: true,
-		Stdout:    &stdout,
-		Stderr:    &stdout,
-	})
-	if err != nil {
+	if err := Run(Options{Mode: ModeFull, AssumeYes: true, Stdout: &stdout, Stderr: &stdout}); err != nil {
 		t.Fatalf("run full uninstall: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "Uninstall complete (full).") {
-		t.Fatalf("expected completion message, got %q", stdout.String())
-	}
 
 	assertNotExists(t, fx.releaseBinary)
-	assertNotExists(t, fx.goBinary)
 	assertNotExists(t, fx.pluginPath)
-	assertNotExists(t, fx.configDir)
-	assertNotExists(t, fx.dataDir)
-
-	assertExists(t, filepath.Dir(fx.releaseBinary))
-	assertExists(t, filepath.Dir(fx.goBinary))
-	assertExists(t, filepath.Dir(fx.pluginPath))
-	assertExists(t, filepath.Dir(fx.openCodeConfigPath))
-	assertExists(t, filepath.Dir(fx.configDir))
-	assertExists(t, filepath.Dir(fx.dataDir))
-
-	configData, err := os.ReadFile(fx.openCodeConfigPath)
-	if err != nil {
-		t.Fatalf("read OpenCode config after uninstall: %v", err)
-	}
-	if strings.Contains(string(configData), "context-bridge") {
-		t.Fatalf("expected OpenCode config to remove only the context-bridge MCP entry, got:\n%s", string(configData))
-	}
-	if !strings.Contains(string(configData), "other") {
-		t.Fatalf("expected sibling OpenCode MCP entries to remain, got:\n%s", string(configData))
-	}
+	assertNotExists(t, fx.configPath)
+	assertNotExists(t, fx.dbPath)
+	assertExists(t, fx.unownedBinary)
+	assertExists(t, fx.configSentinel)
+	assertExists(t, fx.dataSentinel)
+	assertExists(t, fx.configDir)
+	assertExists(t, fx.dataDir)
+	assertFileBytes(t, fx.openCodeConfigPath, fx.openCodeConfig)
 }
 
-func TestRunPreserveDataKeepsConfigAndData(t *testing.T) {
+func TestRunPreserveDataKeepsConfigAndDataAndNeverTouchesOpenCodeConfig(t *testing.T) {
 	fx := newUninstallFixture(t)
 	var stdout bytes.Buffer
-
-	err := Run(Options{
-		Mode:      ModePreserveData,
-		AssumeYes: true,
-		Stdout:    &stdout,
-		Stderr:    &stdout,
-	})
-	if err != nil {
+	if err := Run(Options{Mode: ModePreserveData, AssumeYes: true, Stdout: &stdout, Stderr: &stdout}); err != nil {
 		t.Fatalf("run preserve-data uninstall: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "Uninstall complete (preserve-data).") {
-		t.Fatalf("expected preserve-data completion message, got %q", stdout.String())
-	}
 
 	assertNotExists(t, fx.releaseBinary)
-	assertNotExists(t, fx.goBinary)
 	assertNotExists(t, fx.pluginPath)
-	assertExists(t, fx.configDir)
-	assertExists(t, fx.dataDir)
-	assertExists(t, filepath.Join(fx.configDir, "config.json"))
-	assertExists(t, filepath.Join(fx.dataDir, "store.db"))
-
-	configData, err := os.ReadFile(fx.openCodeConfigPath)
-	if err != nil {
-		t.Fatalf("read OpenCode config after preserve-data uninstall: %v", err)
-	}
-	if strings.Contains(string(configData), "context-bridge") {
-		t.Fatalf("expected preserve-data mode to remove the context-bridge MCP entry, got:\n%s", string(configData))
-	}
-	if !strings.Contains(string(configData), "other") {
-		t.Fatalf("expected sibling OpenCode MCP entries to remain, got:\n%s", string(configData))
-	}
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+	assertExists(t, fx.unownedBinary)
+	assertFileBytes(t, fx.openCodeConfigPath, fx.openCodeConfig)
 }
 
-func TestRunInteractiveCancelLeavesArtifactsUntouched(t *testing.T) {
-	fx := newUninstallFixture(t)
+func TestPromptBlankChoiceDefaultsToPreserveData(t *testing.T) {
+	plan := Plan{Artifacts: []Artifact{{Kind: ArtifactBinary, Path: "/tmp/context-bridge", Exists: true, Description: "binary"}}}
 	var stdout bytes.Buffer
-
-	err := Run(Options{
-		Stdin:  strings.NewReader("2\nno\n"),
-		Stdout: &stdout,
-		Stderr: &stdout,
-	})
-	if err != nil {
-		t.Fatalf("run interactive cancel: %v", err)
-	}
-	if !strings.Contains(stdout.String(), "Uninstall canceled.") {
-		t.Fatalf("expected cancel message, got %q", stdout.String())
-	}
-
-	assertExists(t, fx.releaseBinary)
-	assertExists(t, fx.goBinary)
-	assertExists(t, fx.pluginPath)
-	assertExists(t, fx.configDir)
-	assertExists(t, fx.dataDir)
-
-	configData, err := os.ReadFile(fx.openCodeConfigPath)
-	if err != nil {
-		t.Fatalf("read OpenCode config after cancel: %v", err)
-	}
-	if !strings.Contains(string(configData), "context-bridge") {
-		t.Fatalf("expected cancel to leave OpenCode MCP registration untouched, got:\n%s", string(configData))
-	}
-}
-
-func TestPromptBlankChoiceDefaultsToFullRemoval(t *testing.T) {
-	plan := Plan{Artifacts: []Artifact{{
-		Kind:        ArtifactBinary,
-		Path:        "/tmp/context-bridge",
-		Exists:      true,
-		Description: "release install binary",
-	}}}
-	var stdout bytes.Buffer
-
 	mode, confirmed, err := Prompt(plan, strings.NewReader("\nyes\n"), &stdout)
 	if err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
-	if mode != ModeFull {
-		t.Fatalf("expected blank choice to default to %q, got %q", ModeFull, mode)
+	if mode != ModePreserveData || !confirmed {
+		t.Fatalf("expected confirmed preserve-data default, mode=%q confirmed=%v", mode, confirmed)
 	}
-	if !confirmed {
-		t.Fatalf("expected typed confirmation to succeed")
-	}
-
-	output := stdout.String()
-	if !strings.Contains(output, "1) Full removal (default)") {
-		t.Fatalf("expected prompt to advertise full removal as default, got %q", output)
-	}
-	if !strings.Contains(output, "2) Preserve data") {
-		t.Fatalf("expected prompt to advertise preserve-data mode, got %q", output)
-	}
-	if !strings.Contains(output, "Type 'yes' to confirm full uninstall") {
-		t.Fatalf("expected prompt to confirm full uninstall after blank choice, got %q", output)
+	if !strings.Contains(stdout.String(), "Preserve data (default)") || !strings.Contains(stdout.String(), "confirm preserve-data uninstall") {
+		t.Fatalf("unexpected prompt: %q", stdout.String())
 	}
 }
 
-func TestRunInteractiveBlankChoiceStillRequiresConfirmation(t *testing.T) {
+func TestRunInteractiveDefaultPreservesData(t *testing.T) {
 	fx := newUninstallFixture(t)
 	var stdout bytes.Buffer
-
-	err := Run(Options{
-		Stdin:  strings.NewReader("\nno\n"),
-		Stdout: &stdout,
-		Stderr: &stdout,
-	})
-	if err != nil {
-		t.Fatalf("run interactive default-full cancel: %v", err)
+	if err := Run(Options{Stdin: strings.NewReader("\nyes\n"), Stdout: &stdout, Stderr: &stdout}); err != nil {
+		t.Fatalf("run interactive uninstall: %v", err)
 	}
-
-	output := stdout.String()
-	if !strings.Contains(output, "Type 'yes' to confirm full uninstall") {
-		t.Fatalf("expected interactive flow to require explicit yes for full uninstall, got %q", output)
-	}
-	if !strings.Contains(output, "Uninstall canceled.") {
-		t.Fatalf("expected cancel message, got %q", output)
-	}
-
-	assertExists(t, fx.releaseBinary)
-	assertExists(t, fx.goBinary)
-	assertExists(t, fx.pluginPath)
-	assertExists(t, fx.configDir)
-	assertExists(t, fx.dataDir)
-}
-
-func TestRunFullModeLeavesUnrelatedEnvVarsAndShellSettingsUntouched(t *testing.T) {
-	fx := newUninstallFixture(t)
-	var stdout bytes.Buffer
-
-	t.Setenv("UNRELATED_ENV", "keep-me")
-	bashrc := filepath.Join(fx.home, ".bashrc")
-	zshrc := filepath.Join(fx.home, ".zshrc")
-	bashContent := "export KEEP_THIS=1\nalias ll='ls -lah'\n"
-	zshContent := "export PATH=\"$HOME/bin:$PATH\"\nsetopt autocd\n"
-	writeFixtureFile(t, bashrc, bashContent)
-	writeFixtureFile(t, zshrc, zshContent)
-
-	err := Run(Options{
-		Mode:      ModeFull,
-		AssumeYes: true,
-		Stdout:    &stdout,
-		Stderr:    &stdout,
-	})
-	if err != nil {
-		t.Fatalf("run full uninstall: %v", err)
-	}
-
-	if got := os.Getenv("UNRELATED_ENV"); got != "keep-me" {
-		t.Fatalf("expected unrelated env var to remain unchanged, got %q", got)
-	}
-	assertFileContent(t, bashrc, bashContent)
-	assertFileContent(t, zshrc, zshContent)
-}
-
-func TestRunFullModePerformsNoShellCleanupWithoutProjectOwnedDefinitions(t *testing.T) {
-	fx := newUninstallFixture(t)
-	var stdout bytes.Buffer
-
-	profile := filepath.Join(fx.home, ".profile")
-	configFish := filepath.Join(fx.home, ".config", "fish", "config.fish")
-	profileContent := "export EDITOR=vim\nexport LANG=en_US.UTF-8\n"
-	fishContent := "set -gx FZF_DEFAULT_OPTS '--height 40%'\n"
-	writeFixtureFile(t, profile, profileContent)
-	writeFixtureFile(t, configFish, fishContent)
-
-	err := Run(Options{
-		Mode:      ModeFull,
-		AssumeYes: true,
-		Stdout:    &stdout,
-		Stderr:    &stdout,
-	})
-	if err != nil {
-		t.Fatalf("run full uninstall: %v", err)
-	}
-
-	assertFileContent(t, profile, profileContent)
-	assertFileContent(t, configFish, fishContent)
-}
-
-func TestRunFullModeUsesOnlyResolvedOverridePaths(t *testing.T) {
-	fx, defaultConfigDir, defaultDataDir := newOverrideUninstallFixture(t)
-	var stdout bytes.Buffer
-
-	err := Run(Options{
-		Mode:      ModeFull,
-		AssumeYes: true,
-		Stdout:    &stdout,
-		Stderr:    &stdout,
-	})
-	if err != nil {
-		t.Fatalf("run full uninstall with overrides: %v", err)
-	}
-
 	assertNotExists(t, fx.releaseBinary)
-	assertNotExists(t, fx.goBinary)
 	assertNotExists(t, fx.pluginPath)
-	assertNotExists(t, filepath.Join(fx.configDir, "config.json"))
-	assertNotExists(t, filepath.Join(fx.dataDir, "store.db"))
-	assertExists(t, fx.configDir)
-	assertExists(t, fx.dataDir)
-	assertExists(t, defaultConfigDir)
-	assertExists(t, defaultDataDir)
-	assertExists(t, filepath.Join(defaultConfigDir, "config.json"))
-	assertExists(t, filepath.Join(defaultDataDir, "store.db"))
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+	assertFileBytes(t, fx.openCodeConfigPath, fx.openCodeConfig)
+}
+
+func TestModifiedPluginAbortsBeforeAnyRemoval(t *testing.T) {
+	fx := newUninstallFixture(t)
+	modified := []byte("user modified adapter\n")
+	if err := os.WriteFile(fx.pluginPath, modified, 0o644); err != nil {
+		t.Fatalf("modify plugin: %v", err)
+	}
+
+	err := Run(Options{Mode: ModeFull, AssumeYes: true, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err == nil || !strings.Contains(err.Error(), "modified") {
+		t.Fatalf("expected ownership failure, got %v", err)
+	}
+	assertFileBytes(t, fx.pluginPath, modified)
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+	assertFileBytes(t, fx.openCodeConfigPath, fx.openCodeConfig)
+}
+
+func TestFullRemovalPreservesExplicitConfigOverrideAndItsTarget(t *testing.T) {
+	fx := newUninstallFixture(t)
+	target := filepath.Join(t.TempDir(), "user-config.json")
+	writeFixtureFile(t, target, "user-owned target")
+	symlink := filepath.Join(t.TempDir(), "configured-link.json")
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Fatalf("create config symlink: %v", err)
+	}
+	t.Setenv("CONTEXT_BRIDGE_CONFIG", symlink)
+
+	var output bytes.Buffer
+	if err := Run(Options{Mode: ModeFull, AssumeYes: true, Stdout: &output, Stderr: &output}); err != nil {
+		t.Fatalf("run full uninstall: %v", err)
+	}
+	assertExists(t, symlink)
+	assertFileBytes(t, target, []byte("user-owned target"))
+	assertExists(t, fx.dataSentinel)
+	if !strings.Contains(output.String(), "explicit override") {
+		t.Fatalf("expected explicit override warning, got %q", output.String())
+	}
+}
+
+func TestFullRemovalNeverTreatsOpenCodeConfigAsContextBridgeData(t *testing.T) {
+	fx := newUninstallFixture(t)
+	t.Setenv("CONTEXT_BRIDGE_CONFIG", fx.openCodeConfigPath)
+	t.Setenv("CONTEXT_BRIDGE_DB", filepath.Join(filepath.Dir(fx.openCodeConfigPath), "secrets.db"))
+	secretDB := filepath.Join(filepath.Dir(fx.openCodeConfigPath), "secrets.db")
+	writeFixtureFile(t, secretDB, "do not remove")
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	if findArtifact(plan.Artifacts, ArtifactConfigFile, fx.openCodeConfigPath) != nil || findArtifact(plan.Artifacts, ArtifactDataFile, secretDB) != nil {
+		t.Fatalf("protected OpenCode paths must not enter uninstall artifacts: %+v", plan.Artifacts)
+	}
+	if err := Execute(plan, ModeFull); err != nil {
+		t.Fatalf("execute full plan: %v", err)
+	}
+	assertFileBytes(t, fx.openCodeConfigPath, fx.openCodeConfig)
+	assertFileBytes(t, secretDB, []byte("do not remove"))
+}
+
+func TestFullRemovalRejectsOverrideThroughDirectorySymlinkIntoOpenCode(t *testing.T) {
+	fx := newUninstallFixture(t)
+	linkedParent := filepath.Join(t.TempDir(), "linked-opencode")
+	if err := os.Symlink(filepath.Dir(fx.openCodeConfigPath), linkedParent); err != nil {
+		t.Fatalf("create OpenCode directory symlink: %v", err)
+	}
+	override := filepath.Join(linkedParent, filepath.Base(fx.openCodeConfigPath))
+	t.Setenv("CONTEXT_BRIDGE_CONFIG", override)
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	if findArtifact(plan.Artifacts, ArtifactConfigFile, override) != nil {
+		t.Fatalf("directory-symlink alias of OpenCode config must not enter uninstall plan: %+v", plan.Artifacts)
+	}
+	if err := Execute(plan, ModeFull); err != nil {
+		t.Fatalf("execute full plan: %v", err)
+	}
+	assertFileBytes(t, fx.openCodeConfigPath, fx.openCodeConfig)
+}
+
+func TestRunCancelLeavesEverythingUntouched(t *testing.T) {
+	fx := newUninstallFixture(t)
+	var stdout bytes.Buffer
+	if err := Run(Options{Stdin: strings.NewReader("\nno\n"), Stdout: &stdout, Stderr: &stdout}); err != nil {
+		t.Fatalf("run cancel: %v", err)
+	}
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+	assertFileBytes(t, fx.openCodeConfigPath, fx.openCodeConfig)
+}
+
+func TestExecuteFailurePreservesAdapterAndOwnershipManifestForRetry(t *testing.T) {
+	fx := newUninstallFixture(t)
+	status, err := opencode.InspectIntegration()
+	if err != nil {
+		t.Fatalf("inspect integration: %v", err)
+	}
+	if err := os.Remove(fx.configPath); err != nil {
+		t.Fatalf("remove config fixture: %v", err)
+	}
+	if err := os.Mkdir(fx.configPath, 0o700); err != nil {
+		t.Fatalf("replace config with directory: %v", err)
+	}
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	if err := Execute(plan, ModeFull); err == nil || !strings.Contains(err.Error(), "recursively remove directory") {
+		t.Fatalf("expected data removal failure, got %v", err)
+	}
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, status.ManifestPath)
+}
+
+func TestExecuteRefusesWhileCompatibleBridgeIsRunning(t *testing.T) {
+	fx := newUninstallFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"service":"context-bridge","protocol":1,"version":"test"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("CONTEXT_BRIDGE_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	if err := Execute(plan, ModeFull); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("expected running bridge refusal, got %v", err)
+	}
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+}
+
+func TestExecuteRefusesWhenUnixSocketHealthProbeTimesOut(t *testing.T) {
+	fx := newUninstallFixture(t)
+	socketPath := filepath.Join(fx.configDir, "bridge.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on hanging Unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	err = Execute(plan, ModeFull)
+	if err == nil || !strings.Contains(err.Error(), "could not verify Unix socket") {
+		t.Fatalf("expected fail-closed Unix socket timeout, got %v", err)
+	}
+
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case err := <-acceptErr:
+		t.Fatalf("accept hanging Unix connection: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Unix health probe never connected")
+	}
+	assertExists(t, socketPath)
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+}
+
+func TestWaitForBridgeSocketRemovalRequiresPathDisappearance(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "bridge.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen on Unix socket: %v", err)
+	}
+	listener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close Unix listener: %v", err)
+	}
+	defer os.Remove(socketPath)
+
+	expected, err := os.Lstat(socketPath)
+	if err != nil {
+		t.Fatalf("inspect stale Unix socket: %v", err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", socketPath)
+			},
+		},
+		Timeout: 25 * time.Millisecond,
+	}
+	err = waitForBridgeSocketRemoval(client, socketPath, expected, 25*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "did not remove its Unix socket") {
+		t.Fatalf("expected existing refused socket to block shutdown completion, got %v", err)
+	}
+	assertExists(t, socketPath)
+}
+
+func TestExecuteRefusesWhenExplicitTCPHealthProbeTimesOut(t *testing.T) {
+	fx := newUninstallFixture(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on hanging TCP address: %v", err)
+	}
+	defer listener.Close()
+	t.Setenv("CONTEXT_BRIDGE_ADDR", listener.Addr().String())
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	err = Execute(plan, ModeFull)
+	if err == nil || !strings.Contains(err.Error(), "could not verify explicit TCP address") {
+		t.Fatalf("expected fail-closed TCP timeout, got %v", err)
+	}
+
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case err := <-acceptErr:
+		t.Fatalf("accept hanging TCP connection: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("TCP health probe never connected")
+	}
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+}
+
+func TestExecuteChecksExplicitTCPAfterUnixShutdownCompletes(t *testing.T) {
+	fx := newUninstallFixture(t)
+	socketPath := filepath.Join(fx.configDir, "bridge.sock")
+	unixListener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen on Unix socket: %v", err)
+	}
+	unixListener.SetUnlinkOnClose(false)
+
+	var unixServer *http.Server
+	unixServer = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"ok":true,"service":"context-bridge","protocol":1,"version":"test"}`))
+		case "/shutdown":
+			_, _ = w.Write([]byte(`{"ok":true,"shutdown":true}`))
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				_ = unixServer.Close()
+				_ = os.Remove(socketPath)
+			}()
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	go func() { _ = unixServer.Serve(unixListener) }()
+	defer unixServer.Close()
+	defer os.Remove(socketPath)
+
+	tcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"service":"context-bridge","protocol":1,"version":"test"}`))
+	}))
+	defer tcpServer.Close()
+	t.Setenv("CONTEXT_BRIDGE_ADDR", strings.TrimPrefix(tcpServer.URL, "http://"))
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	err = Execute(plan, ModeFull)
+	if err == nil || !strings.Contains(err.Error(), "still running on explicit TCP address") {
+		t.Fatalf("expected explicit TCP daemon to block uninstall after Unix shutdown, got %v", err)
+	}
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+}
+
+func TestExecuteDoesNotFollowExplicitTCPHealthRedirects(t *testing.T) {
+	fx := newUninstallFixture(t)
+	followed := make(chan struct{}, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		followed <- struct{}{}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"service":"context-bridge","protocol":1,"version":"test"}`))
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirect.Close()
+	t.Setenv("CONTEXT_BRIDGE_ADDR", strings.TrimPrefix(redirect.URL, "http://"))
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	err = Execute(plan, ModeFull)
+	if err == nil || !strings.Contains(err.Error(), "occupied by an incompatible service") {
+		t.Fatalf("expected redirecting TCP endpoint to block uninstall, got %v", err)
+	}
+	select {
+	case <-followed:
+		t.Fatal("explicit TCP health probe followed a redirect")
+	default:
+	}
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
+}
+
+func TestExecuteRemovesStaleUnixSocketAndOwnedArtifacts(t *testing.T) {
+	fx := newUninstallFixture(t)
+	socketPath := filepath.Join(fx.configDir, "bridge.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen on Unix socket: %v", err)
+	}
+	listener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close Unix listener: %v", err)
+	}
+	assertExists(t, socketPath)
+
+	plan, err := BuildPlan("")
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	if err := Execute(plan, ModeFull); err != nil {
+		t.Fatalf("remove stale Unix socket and owned artifacts: %v", err)
+	}
+	assertNotExists(t, socketPath)
+	assertNotExists(t, fx.releaseBinary)
+	assertNotExists(t, fx.pluginPath)
+	assertNotExists(t, fx.configPath)
+	assertNotExists(t, fx.dbPath)
+}
+
+func TestExecuteRejectsRelativeSocketOverrideBeforeRemoval(t *testing.T) {
+	fx := newUninstallFixture(t)
+	t.Setenv("CONTEXT_BRIDGE_SOCKET", "relative/bridge.sock")
+
+	if _, err := BuildPlan(""); err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+		t.Fatalf("expected relative socket override rejection, got %v", err)
+	}
+	assertExists(t, fx.releaseBinary)
+	assertExists(t, fx.pluginPath)
+	assertExists(t, fx.configPath)
+	assertExists(t, fx.dbPath)
 }
 
 func TestRunValidatesExplicitModeAndAssumeYesPairing(t *testing.T) {
-	tests := []struct {
-		name    string
-		opts    Options
-		wantErr string
-	}{
-		{
-			name:    "yes without mode is rejected",
-			opts:    Options{AssumeYes: true, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}},
-			wantErr: "--yes requires --mode=full or --mode=preserve-data",
-		},
-		{
-			name:    "mode without yes is rejected",
-			opts:    Options{Mode: ModeFull, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}},
-			wantErr: "--mode is only supported with --yes; interactive uninstall chooses the mode in the confirmation prompt",
-		},
+	newUninstallFixture(t)
+	if err := Run(Options{AssumeYes: true, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}); err == nil || err.Error() != "--yes requires --mode=full or --mode=preserve-data" {
+		t.Fatalf("unexpected --yes validation error: %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			newUninstallFixture(t)
-
-			err := Run(tt.opts)
-			if err == nil {
-				t.Fatalf("expected error %q", tt.wantErr)
-			}
-			if err.Error() != tt.wantErr {
-				t.Fatalf("expected error %q, got %q", tt.wantErr, err.Error())
-			}
-		})
+	if err := Run(Options{Mode: ModeFull, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}); err == nil || !strings.Contains(err.Error(), "--mode is only supported with --yes") {
+		t.Fatalf("unexpected --mode validation error: %v", err)
 	}
 }
 
 type uninstallFixture struct {
 	home               string
 	releaseBinary      string
-	goBinary           string
+	unownedBinary      string
 	pluginPath         string
 	openCodeConfigPath string
+	openCodeConfig     []byte
 	configDir          string
+	configPath         string
+	configSentinel     string
 	dataDir            string
+	dbPath             string
+	dataSentinel       string
 }
 
 func newUninstallFixture(t *testing.T) uninstallFixture {
 	t.Helper()
-
-	home := t.TempDir()
+	// A short base keeps fixture Unix socket paths under the sun_path limit,
+	// which t.TempDir() can exceed for long test names.
+	home, err := os.MkdirTemp("", "cb-uninstall-")
+	if err != nil {
+		t.Fatalf("create fixture home: %v", err)
+	}
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatalf("secure fixture home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	configHome := filepath.Join(home, "xdg-config")
 	dataHome := filepath.Join(home, "xdg-data")
-	gobin := filepath.Join(home, "gobin")
-
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if runtime.GOOS == "darwin" {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		configHome = filepath.Join(home, "Library", "Application Support")
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", configHome)
+	}
 	t.Setenv("XDG_DATA_HOME", dataHome)
-	t.Setenv("GOBIN", gobin)
-	t.Setenv("GOPATH", "")
-	t.Setenv("INSTALL_DIR", "")
-	t.Setenv("XDG_BIN_HOME", "")
 	t.Setenv("CONTEXT_BRIDGE_CONFIG", "")
 	t.Setenv("CONTEXT_BRIDGE_DB", "")
+	t.Setenv("CONTEXT_BRIDGE_SOCKET", "")
+	t.Setenv("CONTEXT_BRIDGE_ADDR", "")
+	t.Setenv("CONTEXT_BRIDGE_PORT", "")
 
 	fx := uninstallFixture{
 		home:               home,
 		releaseBinary:      filepath.Join(home, ".local", "bin", "context-bridge"),
-		goBinary:           filepath.Join(gobin, "context-bridge"),
-		pluginPath:         filepath.Join(configHome, "opencode", "plugins", "context-bridge.ts"),
+		unownedBinary:      filepath.Join(home, "go", "bin", "context-bridge"),
 		openCodeConfigPath: filepath.Join(configHome, "opencode", "opencode.json"),
+		openCodeConfig:     []byte("{\n  // must remain byte-identical\n  \"secret\": \"keep\",\n  \"mcp\": {\"context-bridge\": {\"enabled\": true}}\n}\n"),
 		configDir:          filepath.Join(configHome, "context-bridge"),
 		dataDir:            filepath.Join(dataHome, "context-bridge"),
 	}
+	fx.configPath = filepath.Join(fx.configDir, "config.json")
+	fx.configSentinel = filepath.Join(fx.configDir, "user-owned.txt")
+	fx.dbPath = filepath.Join(fx.dataDir, "store.db")
+	fx.dataSentinel = filepath.Join(fx.dataDir, "user-owned.txt")
 
 	writeFixtureFile(t, fx.releaseBinary, "release binary")
-	writeFixtureFile(t, fx.goBinary, "stale go binary")
-	writeFixtureFile(t, fx.pluginPath, "plugin")
-	writeFixtureFile(t, filepath.Join(fx.configDir, "config.json"), `{"search_mode":"regex"}`)
-	writeFixtureFile(t, filepath.Join(fx.dataDir, "store.db"), "sqlite")
-	writeFixtureFile(t, fx.openCodeConfigPath, `{
-		"theme": "dark",
-		"mcp": {
-			"context-bridge": {"type": "local", "command": ["context-bridge", "mcp"], "enabled": true},
-			"other": {"type": "remote", "enabled": false}
-		}
-	}`)
-
-	return fx
-}
-
-func newOverrideUninstallFixture(t *testing.T) (uninstallFixture, string, string) {
-	t.Helper()
-
-	home := t.TempDir()
-	configHome := filepath.Join(home, "xdg-config-default")
-	dataHome := filepath.Join(home, "xdg-data-default")
-	gobin := filepath.Join(home, "gobin")
-	overrideConfigFile := filepath.Join(home, "override-config", "config.json")
-	overrideDBPath := filepath.Join(home, "override-data", "store.db")
-
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	t.Setenv("GOBIN", gobin)
-	t.Setenv("GOPATH", "")
-	t.Setenv("INSTALL_DIR", "")
-	t.Setenv("XDG_BIN_HOME", "")
-	t.Setenv("CONTEXT_BRIDGE_CONFIG", overrideConfigFile)
-	t.Setenv("CONTEXT_BRIDGE_DB", overrideDBPath)
-
-	fx := uninstallFixture{
-		home:               home,
-		releaseBinary:      filepath.Join(home, ".local", "bin", "context-bridge"),
-		goBinary:           filepath.Join(gobin, "context-bridge"),
-		pluginPath:         filepath.Join(configHome, "opencode", "plugins", "context-bridge.ts"),
-		openCodeConfigPath: filepath.Join(configHome, "opencode", "opencode.json"),
-		configDir:          filepath.Dir(overrideConfigFile),
-		dataDir:            filepath.Dir(overrideDBPath),
+	if err := os.Chmod(fx.releaseBinary, 0o755); err != nil {
+		t.Fatalf("make release binary executable: %v", err)
 	}
+	writeFixtureFile(t, fx.unownedBinary, "unowned binary")
+	writeFixtureFile(t, fx.openCodeConfigPath, string(fx.openCodeConfig))
+	writeFixtureFile(t, fx.configPath, `{"search_mode":"regex"}`)
+	writeFixtureFile(t, fx.configSentinel, "keep config sibling")
+	writeFixtureFile(t, fx.dbPath, "sqlite")
+	writeFixtureFile(t, fx.dataSentinel, "keep data sibling")
 
-	writeFixtureFile(t, fx.releaseBinary, "release binary")
-	writeFixtureFile(t, fx.goBinary, "stale go binary")
-	writeFixtureFile(t, fx.pluginPath, "plugin")
-	writeFixtureFile(t, filepath.Join(fx.configDir, "config.json"), `{"search_mode":"regex"}`)
-	writeFixtureFile(t, filepath.Join(fx.dataDir, "store.db"), "sqlite")
-	writeFixtureFile(t, fx.openCodeConfigPath, `{
-		"theme": "dark",
-		"mcp": {
-			"context-bridge": {"type": "local", "command": ["context-bridge", "mcp"], "enabled": true},
-			"other": {"type": "remote", "enabled": false}
-		}
-	}`)
-
-	defaultConfigDir := filepath.Join(configHome, "context-bridge")
-	defaultDataDir := filepath.Join(dataHome, "context-bridge")
-	writeFixtureFile(t, filepath.Join(defaultConfigDir, "config.json"), `{"search_mode":"fts5"}`)
-	writeFixtureFile(t, filepath.Join(defaultDataDir, "store.db"), "stale sqlite")
-
-	return fx, defaultConfigDir, defaultDataDir
+	pluginPath, err := opencode.InstallOwnedPlugin(fx.releaseBinary)
+	if err != nil {
+		t.Fatalf("install owned fixture plugin: %v", err)
+	}
+	fx.pluginPath = pluginPath
+	return fx
 }
 
 func writeFixtureFile(t *testing.T, path, content string) {
 	t.Helper()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
@@ -456,25 +641,25 @@ func findArtifact(artifacts []Artifact, kind ArtifactKind, path string) *Artifac
 
 func assertExists(t *testing.T, path string) {
 	t.Helper()
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Lstat(path); err != nil {
 		t.Fatalf("expected %q to exist, stat err=%v", path, err)
 	}
 }
 
 func assertNotExists(t *testing.T, path string) {
 	t.Helper()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("expected %q to be removed, stat err=%v", path, err)
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %q to be absent, stat err=%v", path, err)
 	}
 }
 
-func assertFileContent(t *testing.T, path, want string) {
+func assertFileBytes(t *testing.T, path string, want []byte) {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %q: %v", path, err)
 	}
-	if string(data) != want {
-		t.Fatalf("expected %q to remain unchanged, got %q", want, string(data))
+	if string(got) != string(want) {
+		t.Fatalf("unexpected content in %q: %q", path, got)
 	}
 }

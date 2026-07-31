@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -95,6 +96,59 @@ func TestHostedUninstallScriptUsesTemporaryReleaseBinary(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Checksum verified") {
 		t.Fatalf("expected hosted uninstall checksum verification log, stderr=%q", stderr.String())
+	}
+}
+
+func TestHostedUninstallDryRunDoesNotRequireTTY(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("hosted uninstall script test only supports unix-like systems")
+	}
+
+	workdir := t.TempDir()
+	fixturesDir := filepath.Join(workdir, "fixtures")
+	binDir := filepath.Join(workdir, "bin")
+	logsDir := filepath.Join(workdir, "logs")
+	for _, dir := range []string{fixturesDir, binDir, logsDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	archiveName, checksumsName := releaseAssetNames(t)
+	invokedArgs := filepath.Join(logsDir, "invoked-args.txt")
+	excludePath := filepath.Join(logsDir, "exclude-path.txt")
+	archivePath := filepath.Join(fixturesDir, archiveName)
+	if err := writeHostedArchive(archivePath, invokedArgs, excludePath); err != nil {
+		t.Fatalf("write hosted archive: %v", err)
+	}
+	if err := writeChecksumsFile(archivePath, filepath.Join(fixturesDir, checksumsName)); err != nil {
+		t.Fatalf("write checksums: %v", err)
+	}
+	if err := writeCurlStub(filepath.Join(binDir, "curl"), fixturesDir); err != nil {
+		t.Fatalf("write curl stub: %v", err)
+	}
+
+	cmd := exec.Command("bash", "uninstall.sh", "--dry-run")
+	cmd.Dir = filepath.Join(repoRoot(t), "script")
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"VERSION=1.2.3",
+		"REPO=acme/context-bridge",
+	)
+	cmd.Stdin = strings.NewReader("")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run hosted dry-run without a TTY: %v\nstderr:\n%s", err, stderr.String())
+	}
+	argsData, err := os.ReadFile(invokedArgs)
+	if err != nil {
+		t.Fatalf("read invoked args: %v", err)
+	}
+	if got := strings.TrimSpace(string(argsData)); got != "uninstall --dry-run" {
+		t.Fatalf("expected hosted dry-run to reach the temporary binary, got %q", got)
 	}
 }
 

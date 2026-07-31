@@ -21,10 +21,6 @@ func installPluginCmd() tea.Cmd {
 			return pluginInstalledMsg{err: fmt.Errorf("could not install plugin: %w", err)}
 		}
 
-		if err := opencode.EnsureMCPRegistration([]string{resolveContextBridgeCommand(), "mcp"}); err != nil {
-			// Non-fatal, just write to log or ignore
-		}
-
 		return pluginInstalledMsg{err: nil, path: filepath.Dir(pluginPath)}
 	}
 }

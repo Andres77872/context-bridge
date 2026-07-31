@@ -1,9 +1,12 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,7 +18,11 @@ import (
 
 func openTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "context-bridge.db")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("secure db directory: %v", err)
+	}
+	dbPath := filepath.Join(dir, "context-bridge.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -35,7 +42,7 @@ func seedSession(t *testing.T, st *store.Store, sessionID string, captures []str
 		record, err := st.AddCapture(store.CaptureInput{
 			ParentSessionID: sessionID,
 			ChildSessionID:  "child-" + sessionID,
-			CallID:          "call-" + sessionID + "-" + c.agent + "-" + c.desc,
+			CallID:          fmt.Sprintf("call-%s-%d", sessionID, c.seq),
 			Agent:           c.agent,
 			Description:     c.desc,
 			Content:         c.content,
@@ -372,12 +379,26 @@ func TestRoutesServeHTMLWithParityControls(t *testing.T) {
 	st := openTestStore(t)
 	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7440/", nil)
+	req.AddCookie(&http.Cookie{Name: "context_bridge_session", Value: srv.accessToken})
 
 	srv.Routes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for name, want := range map[string]string{
+		"Cache-Control":                "no-store",
+		"Content-Security-Policy":      dashboardCSP,
+		"Cross-Origin-Resource-Policy": "same-origin",
+		"Permissions-Policy":           "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+		"Referrer-Policy":              "no-referrer",
+		"X-Content-Type-Options":       "nosniff",
+		"X-Frame-Options":              "DENY",
+	} {
+		if got := rec.Header().Get(name); got != want {
+			t.Errorf("expected %s=%q, got %q", name, want, got)
+		}
 	}
 	body := rec.Body.String()
 	for _, needle := range []string{
@@ -387,9 +408,102 @@ func TestRoutesServeHTMLWithParityControls(t *testing.T) {
 		`id="capture-query-filter"`,
 		`id="session-delete-button"`,
 		`id="capture-delete-button"`,
+		`function inlineString(value)`,
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected html to contain %s", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		`selectSession('${escHtml(`,
+		`viewCapture('${escHtml(`,
+		`jumpToCapture('${escHtml(`,
+		`id="sitem-${CSS.escape(`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("expected html not to contain unsafe inline interpolation %s", forbidden)
+		}
+	}
+}
+
+func TestRoutesRejectCrossOriginRequestsWithoutCORS(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7440/api/stats", nil)
+	req.Header.Set("Origin", "https://attacker.example")
+	req.AddCookie(&http.Cookie{Name: "context_bridge_session", Value: srv.accessToken})
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected cross-origin request to be rejected with 403, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("dashboard must not emit a permissive CORS header, got %q", got)
+	}
+}
+
+func TestRoutesAllowSameOriginRequests(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7440/api/stats", nil)
+	req.Header.Set("Origin", "http://127.0.0.1:7440")
+	req.AddCookie(&http.Cookie{Name: "context_bridge_session", Value: srv.accessToken})
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected same-origin request to succeed, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRoutesRejectDNSRebindingHostEvenWithValidToken(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	req := httptest.NewRequest(http.MethodGet, "http://evil.example:7440/api/stats", nil)
+	req.Header.Set("Origin", "http://evil.example:7440")
+	req.AddCookie(&http.Cookie{Name: "context_bridge_session", Value: srv.accessToken})
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected DNS-rebinding Host to be rejected, got %d", rec.Code)
+	}
+}
+
+func TestRoutesRequireTokenAndBootstrapSessionCookie(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	unauthorized := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7440/api/stats", nil))
+	if unauthorized.Code != http.StatusForbidden {
+		t.Fatalf("expected missing token to be rejected, got %d", unauthorized.Code)
+	}
+
+	bootstrap := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7440/?token="+srv.accessToken, nil)
+	srv.Routes().ServeHTTP(bootstrap, req)
+	if bootstrap.Code != http.StatusSeeOther {
+		t.Fatalf("expected token bootstrap redirect, got %d", bootstrap.Code)
+	}
+	cookies := bootstrap.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "context_bridge_session" || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("unexpected bootstrap cookie: %+v", cookies)
+	}
+}
+
+func TestValidateLoopbackAddr(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:7440", "127.8.9.10:7440", "[::1]:7440", "localhost:7440"} {
+		if err := validateLoopbackAddr(addr); err != nil {
+			t.Errorf("expected %q to be accepted: %v", addr, err)
+		}
+	}
+	for _, addr := range []string{"0.0.0.0:7440", ":7440", "192.0.2.1:7440", "example.com:7440", "127.0.0.1"} {
+		if err := validateLoopbackAddr(addr); err == nil {
+			t.Errorf("expected %q to be rejected", addr)
 		}
 	}
 }
@@ -466,6 +580,7 @@ func TestHandleUpdateConfigWritesAndUpdatesMemory(t *testing.T) {
 	srv := New(st, store.SearchModeRegex, configPath)
 
 	req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"search_mode":"fts5"}`))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.handleUpdateConfig(rec, req)
 
@@ -490,6 +605,7 @@ func TestHandleUpdateConfigRejectsInvalidMode(t *testing.T) {
 	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
 
 	req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"search_mode":"ripgrep"}`))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.handleUpdateConfig(rec, req)
 
@@ -503,11 +619,126 @@ func TestHandleUpdateConfigRejectsUnknownFields(t *testing.T) {
 	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
 
 	req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"search_mode":"regex","engine":"fts5"}`))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.handleUpdateConfig(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUpdateConfigEnforcesJSONTransportContract(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		wantStatus  int
+	}{
+		{name: "missing content type", body: `{"search_mode":"regex"}`, wantStatus: http.StatusUnsupportedMediaType},
+		{name: "wrong content type", contentType: "text/plain", body: `{"search_mode":"regex"}`, wantStatus: http.StatusUnsupportedMediaType},
+		{name: "multiple JSON values", contentType: "application/json", body: `{"search_mode":"regex"} {}`, wantStatus: http.StatusBadRequest},
+		{name: "trailing garbage", contentType: "application/json", body: `{"search_mode":"regex"} trailing`, wantStatus: http.StatusBadRequest},
+		{name: "oversized body", contentType: "application/json", body: strings.Repeat(" ", maxConfigBodyBytes+1), wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "JSON media type parameters", contentType: "application/json; charset=utf-8", body: `{"search_mode":"fts5"}`, wantStatus: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := openTestStore(t)
+			srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+			req := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(tt.body))
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			}
+			rec := httptest.NewRecorder()
+
+			srv.handleUpdateConfig(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tt.wantStatus, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleSearchRejectsOversizedUTF8Query(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	query := strings.Repeat("é", maxWebQueryBytes/2+1)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/ses_test/search?q="+query, nil)
+	req.SetPathValue("id", "ses_test")
+	rec := httptest.NewRecorder()
+
+	srv.handleSearch(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "exceeds") {
+		t.Fatalf("expected oversized UTF-8 query to be rejected, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleCapturesPropagatesCanceledRequestContext(t *testing.T) {
+	st := openTestStore(t)
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/ses_test/captures", nil)
+	req.SetPathValue("id", "ses_test")
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	srv.handleCaptures(rec, req)
+
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "context canceled") {
+		t.Fatalf("expected canceled request context to reach the store, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebCaptureAndSearchResultsAreBounded(t *testing.T) {
+	st := openTestStore(t)
+	const sessionID = "ses_web_limits"
+	for i := 1; i <= maxWebCaptures+1; i++ {
+		if _, err := st.AddCapture(store.CaptureInput{
+			ParentSessionID: sessionID,
+			CallID:          fmt.Sprintf("call-%03d", i),
+			Agent:           "grep",
+			Description:     "bounded output",
+			Content:         "needle",
+			CapturedAt:      time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed capture %d: %v", i, err)
+		}
+	}
+
+	srv := New(st, store.SearchModeRegex, filepath.Join(t.TempDir(), "config.json"))
+	capturesRequest := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID+"/captures", nil)
+	capturesRequest.SetPathValue("id", sessionID)
+	capturesRecorder := httptest.NewRecorder()
+	srv.handleCaptures(capturesRecorder, capturesRequest)
+	if capturesRecorder.Code != http.StatusOK {
+		t.Fatalf("captures: expected 200, got %d: %s", capturesRecorder.Code, capturesRecorder.Body.String())
+	}
+	var captures []map[string]any
+	if err := json.Unmarshal(capturesRecorder.Body.Bytes(), &captures); err != nil {
+		t.Fatalf("parse captures response: %v", err)
+	}
+	if len(captures) != maxWebCaptures {
+		t.Fatalf("expected at most %d captures, got %d", maxWebCaptures, len(captures))
+	}
+
+	searchRequest := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID+"/search?q=needle", nil)
+	searchRequest.SetPathValue("id", sessionID)
+	searchRecorder := httptest.NewRecorder()
+	srv.handleSearch(searchRecorder, searchRequest)
+	if searchRecorder.Code != http.StatusOK {
+		t.Fatalf("search: expected 200, got %d: %s", searchRecorder.Code, searchRecorder.Body.String())
+	}
+	var results []map[string]any
+	if err := json.Unmarshal(searchRecorder.Body.Bytes(), &results); err != nil {
+		t.Fatalf("parse search response: %v", err)
+	}
+	if len(results) != maxWebSearchResults {
+		t.Fatalf("expected at most %d search results, got %d", maxWebSearchResults, len(results))
 	}
 }
 
@@ -536,6 +767,7 @@ func TestHandleSearchModePersistsAcrossRestart(t *testing.T) {
 
 	// Update to FTS5 via API
 	req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"search_mode":"fts5"}`))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	firstSrv.handleUpdateConfig(rec, req)
 	if rec.Code != http.StatusOK {
@@ -617,6 +849,7 @@ func TestHandleSearchModeRoundTripBothModes(t *testing.T) {
 			// Create server, save mode
 			srv := New(st, store.SearchModeRegex, configPath)
 			req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"search_mode":"`+tt.mode+`"}`))
+			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			srv.handleUpdateConfig(rec, req)
 			if rec.Code != http.StatusOK {

@@ -183,7 +183,7 @@ def validate_token(payload):
 		// Should only show 1 line before and after
 		expectedLines := []string{
 			"   19: {",
-			">>> 20:   \"api_key\": \"secret_abc123\",",
+			">>> 20:   \"api_key\": \"[REDACTED]\",",
 			"   21:   \"retry_count\": 3,",
 		}
 		for _, line := range expectedLines {
@@ -220,8 +220,13 @@ def validate_token(payload):
 		if resp.IsError {
 			t.Fatalf("unexpected error: %v", resp.Text)
 		}
-		if !strings.Contains(resp.Text, "No matches for \"ThisWillNeverMatch12345\" across 3 outputs.") {
-			t.Errorf("Expected 'No matches...' message, got:\n%s", resp.Text)
+		for _, want := range []string{
+			"No matches for \"ThisWillNeverMatch12345\" across the 250 most recent candidate outputs",
+			"this root session retains 3 outputs.",
+		} {
+			if !strings.Contains(resp.Text, want) {
+				t.Errorf("Expected no-match response to contain %q, got:\n%s", want, resp.Text)
+			}
 		}
 	})
 
@@ -233,8 +238,8 @@ def validate_token(payload):
 		if !resp.IsError {
 			t.Fatalf("Expected error for empty query, but got success")
 		}
-		if !strings.Contains(resp.Text, "query is required") {
-			t.Errorf("Expected 'query is required' error, got: %s", resp.Text)
+		if !strings.Contains(resp.Text, "must not be empty") {
+			t.Errorf("Expected empty-query validation error, got: %s", resp.Text)
 		}
 	})
 }
@@ -355,8 +360,8 @@ Stack trace for auth error:
 		if strings.Contains(regexDesc, "FTS5") {
 			t.Errorf("Regex mode should NOT mention FTS5 in description, got: %q", regexDesc)
 		}
-		if !strings.Contains(fts5Desc, "keyword") {
-			t.Errorf("FTS5 mode should mention keyword search in description, got: %q", fts5Desc)
+		if !strings.Contains(fts5Desc, "literal-term") {
+			t.Errorf("FTS5 mode should mention literal-term search in description, got: %q", fts5Desc)
 		}
 	})
 
@@ -369,8 +374,8 @@ Stack trace for auth error:
 		if !resp.IsError {
 			t.Fatalf("Expected error for empty query in FTS5 mode, but got success")
 		}
-		if !strings.Contains(resp.Text, "query is required") {
-			t.Errorf("Expected 'query is required' error in FTS5 mode, got: %s", resp.Text)
+		if !strings.Contains(resp.Text, "must not be empty") {
+			t.Errorf("Expected empty-query validation error in FTS5 mode, got: %s", resp.Text)
 		}
 	})
 

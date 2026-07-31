@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+umask 077
 
 REPO="${REPO:-Andres77872/context-bridge}"
 BINARY_NAME="${BINARY_NAME:-context-bridge}"
@@ -41,21 +42,34 @@ detect_arch() {
 http_get() {
   url="$1"
   out="${2:-}"
-  auth_header=""
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    auth_header="-H \"Authorization: Bearer ${GITHUB_TOKEN}\""
-  fi
   if command -v curl >/dev/null 2>&1; then
-    if [ -n "$out" ]; then
-      eval curl -fsSL "$auth_header" -o "\"\$out\"" "\"\$url\""
-    else
-      eval curl -fsSL "$auth_header" "\"\$url\""
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      case "$GITHUB_TOKEN" in
+        *[!A-Za-z0-9._-]*) die "GITHUB_TOKEN contains unsupported characters" ;;
+      esac
     fi
-  elif command -v wget >/dev/null 2>&1; then
     if [ -n "$out" ]; then
-      eval wget -qO "\"\$out\"" "$auth_header" "\"\$url\""
+      if [ -n "${GITHUB_TOKEN:-}" ]; then
+        if printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" | curl -fsSL --config - -o "$out" "$url"; then status=0; else status=$?; fi
+      else
+        if curl -fsSL -o "$out" "$url"; then status=0; else status=$?; fi
+      fi
     else
-      eval wget -qO- "$auth_header" "\"\$url\""
+      if [ -n "${GITHUB_TOKEN:-}" ]; then
+        if printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" | curl -fsSL --config - "$url"; then status=0; else status=$?; fi
+      else
+        if curl -fsSL "$url"; then status=0; else status=$?; fi
+      fi
+    fi
+    return "$status"
+  elif command -v wget >/dev/null 2>&1; then
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      die "authenticated downloads require curl so the token is not exposed in process arguments"
+    fi
+    if [ -n "$out" ]; then
+      wget -qO "$out" "$url"
+    else
+      wget -qO- "$url"
     fi
   else
     die "need curl or wget"
@@ -85,14 +99,16 @@ verify_checksum() {
   if [ -z "$line" ]; then
     die "no checksum entry for $archive_name"
   fi
-  cd "$(dirname "$archive")"
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s\n' "$line" | sha256sum -c - >/dev/null 2>&1
-  elif command -v shasum >/dev/null 2>&1; then
-    printf '%s\n' "$line" | shasum -a 256 -c - >/dev/null 2>&1
-  else
-    die "need sha256sum or shasum for checksum verification"
-  fi
+  (
+    cd "$(dirname "$archive")"
+    if command -v sha256sum >/dev/null 2>&1; then
+      printf '%s\n' "$line" | sha256sum -c - >/dev/null 2>&1
+    elif command -v shasum >/dev/null 2>&1; then
+      printf '%s\n' "$line" | shasum -a 256 -c - >/dev/null 2>&1
+    else
+      die "need sha256sum or shasum for checksum verification"
+    fi
+  )
 }
 
 print_path_hint() {
@@ -107,21 +123,24 @@ normalize_version() {
   printf '%s' "$1" | sed 's/^v//'
 }
 
-get_installed_version() {
-  binary_path="$1"
-  if [ -x "$binary_path" ]; then
-    "$binary_path" version 2>/dev/null || echo ""
-  else
-    echo ""
-  fi
-}
-
 main() {
   need_cmd_any curl wget
-  need_cmd uname mktemp awk sed tar cut
+  for cmd in uname mktemp awk sed tar cut mkdir cp chmod mv find head; do
+    need_cmd "$cmd"
+  done
 
   os=$(detect_os)
   arch=$(detect_arch)
+
+  case "$BINARY_NAME" in
+    ""|.|..|*/*|*\\*|*[!A-Za-z0-9._-]*) die "BINARY_NAME must be a safe basename" ;;
+  esac
+  case "$REPO" in
+    */*) repo_owner=${REPO%%/*}; repo_name=${REPO#*/} ;;
+    *) die "REPO must use owner/repository form" ;;
+  esac
+  case "$repo_owner" in ""|*[!A-Za-z0-9._-]*) die "REPO owner contains unsupported characters" ;; esac
+  case "$repo_name" in ""|*/*|*[!A-Za-z0-9._-]*) die "REPO name contains unsupported characters" ;; esac
 
   if [ "$VERSION" = "latest" ]; then
     tag=$(latest_tag)
@@ -135,40 +154,17 @@ main() {
       *) tag="v$tag" ;;
     esac
   fi
+  case "$tag" in
+    ""|*[!A-Za-z0-9._-]*) die "release tag contains unsupported characters" ;;
+  esac
 
   install_dir=$(pick_install_dir)
+  mkdir -p "$install_dir"
+  install_dir=$(cd "$install_dir" && pwd -P)
   binary_path="${install_dir}/${BINARY_NAME}"
-  
-  installed_version=""
-  if [ -x "$binary_path" ]; then
-    installed_version=$(get_installed_version "$binary_path")
-  fi
-
-  normalized_installed=""
-  if [ -n "$installed_version" ]; then
-    normalized_installed=$(normalize_version "$installed_version")
-  fi
-  normalized_target=$(normalize_version "$tag")
-
-  log "Current version: ${installed_version:-<not installed>}"
   log "Target version:  $tag"
   log "Install path:    $binary_path"
-
-  if [ -n "$normalized_installed" ] && [ "$normalized_installed" = "$normalized_target" ]; then
-    log ""
-    log "Action: SKIP (versions match)"
-    log "Already installed at version $tag"
-    log "Location: $binary_path"
-    exit 0
-  fi
-
-  log ""
-  if [ -n "$installed_version" ]; then
-    log "Action: INSTALL (current '$installed_version' differs from target '$tag')"
-  else
-    log "Action: INSTALL (not currently installed)"
-  fi
-
+  log "Action: DOWNLOAD, VERIFY, AND INSTALL"
   log "Installing $BINARY_NAME $tag ($os/$arch)"
 
   archive_version=$(normalize_version "$tag")
@@ -178,7 +174,37 @@ main() {
   base_url="https://github.com/${REPO}/releases/download/${tag}"
 
   workdir=$(mktemp -d)
-  trap 'rm -rf "$workdir"' EXIT HUP INT TERM
+  install_candidate=""
+  install_backup=""
+  install_published=0
+  install_committed=0
+  cleanup() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    rm -rf "$workdir"
+    if [ -n "$install_candidate" ]; then
+      rm -f "$install_candidate"
+    fi
+    if [ "$install_committed" != "1" ]; then
+      if [ "$install_published" = "1" ]; then
+        rm -f "$binary_path"
+      fi
+      if [ -n "$install_backup" ]; then
+        if ! mv "$install_backup" "$binary_path"; then
+          log "CRITICAL: failed to restore previous binary from $install_backup"
+        else
+          install_backup=""
+        fi
+      fi
+    elif [ -n "$install_backup" ]; then
+      rm -f "$install_backup"
+    fi
+    exit "$status"
+  }
+  trap cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   archive_url="${base_url}/${archive_name}"
   checksums_url="${base_url}/${checksums_name}"
@@ -192,8 +218,6 @@ main() {
     log "Checksum verified"
   fi
 
-  mkdir -p "$install_dir"
-
   tar -xzf "$workdir/$archive_name" -C "$workdir"
 
   if [ -f "$workdir/$BINARY_NAME" ]; then
@@ -205,8 +229,32 @@ main() {
     fi
   fi
 
-  cp "$binary" "$install_dir/$BINARY_NAME"
-  chmod 0755 "$install_dir/$BINARY_NAME"
+  install_candidate=$(mktemp "${install_dir}/.${BINARY_NAME}.tmp.XXXXXX")
+  cp "$binary" "$install_candidate"
+  chmod 0755 "$install_candidate"
+
+  if [ -L "$binary_path" ]; then
+    die "refusing to replace symlink at $binary_path"
+  fi
+  if [ -e "$binary_path" ] && [ ! -f "$binary_path" ]; then
+    die "refusing to replace non-regular file at $binary_path"
+  fi
+  if [ -e "$binary_path" ]; then
+    install_backup=$(mktemp "${install_dir}/.${BINARY_NAME}.backup.XXXXXX")
+    cp -p "$binary_path" "$install_backup"
+  fi
+  mv "$install_candidate" "$binary_path"
+  install_candidate=""
+  install_published=1
+
+  if ! "$binary_path" integration install --owned-binary; then
+    die "OpenCode integration install failed; the previous binary was restored and OpenCode config files were left untouched"
+  fi
+  install_committed=1
+  if [ -n "$install_backup" ]; then
+    rm -f "$install_backup"
+    install_backup=""
+  fi
 
   log ""
   log "Installed: $install_dir/$BINARY_NAME"

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -11,14 +13,29 @@ import (
 	"context-bridge/internal/store"
 )
 
+const (
+	maxEventRequestBytes   = 1024 * 1024
+	maxCaptureRequestBytes = 8 * 1024 * 1024
+)
+
 type Server struct {
 	store      *store.Store
 	mux        *http.ServeMux
 	searchMode store.SearchMode
+	version    string
+	shutdown   func()
 }
 
 func New(st *store.Store, searchMode store.SearchMode) *Server {
-	s := &Server{store: st, mux: http.NewServeMux(), searchMode: searchMode}
+	return NewWithVersion(st, searchMode, "dev")
+}
+
+func NewWithVersion(st *store.Store, searchMode store.SearchMode, version string) *Server {
+	return NewWithVersionAndShutdown(st, searchMode, version, nil)
+}
+
+func NewWithVersionAndShutdown(st *store.Store, searchMode store.SearchMode, version string, shutdown func()) *Server {
+	s := &Server{store: st, mux: http.NewServeMux(), searchMode: searchMode, version: version, shutdown: shutdown}
 	s.routes()
 	return s
 }
@@ -29,13 +46,30 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	if s.shutdown != nil {
+		s.mux.HandleFunc("POST /shutdown", s.handleShutdown)
+	}
 	s.mux.HandleFunc("POST /events", s.handleEvent)
 	s.mux.HandleFunc("POST /capture", s.handleCapture)
 	s.mux.HandleFunc("GET /hint", s.handleHint)
 }
 
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	var payload struct{}
+	if !decodeLocalJSON(w, r, 1024, &payload) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "shutdown": true})
+	s.shutdown()
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"service":  "context-bridge",
+		"protocol": 1,
+		"version":  s.version,
+	})
 }
 
 type eventPayload struct {
@@ -50,8 +84,7 @@ type sessionInfo struct {
 
 func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	var payload eventPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if !decodeLocalJSON(w, r, maxEventRequestBytes, &payload) {
 		return
 	}
 
@@ -92,8 +125,7 @@ type capturePayload struct {
 
 func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 	var payload capturePayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if !decodeLocalJSON(w, r, maxCaptureRequestBytes, &payload) {
 		return
 	}
 
@@ -148,6 +180,39 @@ func decodeSessionInfo(raw json.RawMessage) sessionInfo {
 	var info sessionInfo
 	_ = json.Unmarshal(raw, &info)
 	return info
+}
+
+func decodeLocalJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
+	if strings.TrimSpace(r.Header.Get("Origin")) != "" {
+		writeError(w, http.StatusForbidden, errors.New("browser-origin requests are not accepted"))
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, http.StatusUnsupportedMediaType, errors.New("Content-Type must be application/json"))
+		return false
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, errors.New("request body is too large"))
+			return false
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("request body must contain exactly one JSON value")
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -508,7 +508,12 @@ function escHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function inlineString(value) {
+  return escHtml(JSON.stringify(String(value)));
 }
 
 function highlightSnippet(snippet, query) {
@@ -956,7 +961,7 @@ function renderRecentSessions(sessions) {
   }
 
   const rows = sessions.map(s => `
-    <tr class="group cursor-pointer border-b border-border hover:bg-muted/30 transition-colors" onclick="navigate('sessions');selectSession('${escHtml(s.id)}')">
+    <tr class="group cursor-pointer border-b border-border hover:bg-muted/30 transition-colors" onclick="navigate('sessions');selectSession(${inlineString(s.id)})">
       <td class="p-3.5 align-middle">
         <span class="inline-block font-mono text-[0.7rem] text-rp-foam bg-rp-foam/10 px-2 py-1 rounded" title="${escHtml(s.id)}">${escHtml(truncateId(s.id))}</span>
       </td>
@@ -1024,8 +1029,8 @@ function renderSessionList(sessions) {
     const activeClasses = isActive ? 'active' : '';
     return `
     <div class="session-item ${activeClasses}"
-         id="sitem-${CSS.escape(s.id)}"
-         onclick="selectSession('${escHtml(s.id)}')">
+         id="${escHtml('sitem-' + s.id)}"
+         onclick="selectSession(${inlineString(s.id)})">
       <div class="flex justify-between items-start gap-2 mb-2">
         <span class="inline-block font-mono text-[0.65rem] text-rp-foam bg-rp-foam/10 px-1.5 py-0.5 rounded truncate" title="${escHtml(s.id)}">${escHtml(truncateId(s.id, 18))}</span>
         ${s.deleted_at ? '<span class="text-[0.62rem] text-rp-love bg-rp-love/10 px-1 py-0.5 rounded shrink-0">deleted</span>' : ''}
@@ -1048,7 +1053,7 @@ async function selectSession(sessionId) {
 
   // Highlight selected item in list
   document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
-  const activeItem = document.getElementById('sitem-' + CSS.escape(sessionId));
+  const activeItem = document.getElementById('sitem-' + sessionId);
   if (activeItem) activeItem.classList.add('active');
 
   // Show captures loading
@@ -1085,7 +1090,7 @@ function renderCaptureList(captures, sessionId) {
         </div>
         <div class="flex items-center gap-2 flex-wrap justify-end">
           <span class="font-mono text-[0.65rem] text-rp-foam bg-rp-foam/10 px-2 py-1 rounded" title="${escHtml(sessionId)}">${escHtml(truncateId(sessionId, 22))}</span>
-          <button id="session-delete-button" class="inline-flex items-center gap-1 rounded-lg border border-rp-love/30 bg-rp-love/10 px-3 py-1.5 text-[0.72rem] font-semibold text-rp-love transition-colors hover:bg-rp-love/20" onclick="promptDeleteSession(event, '${escHtml(sessionId)}')">
+          <button id="session-delete-button" class="inline-flex items-center gap-1 rounded-lg border border-rp-love/30 bg-rp-love/10 px-3 py-1.5 text-[0.72rem] font-semibold text-rp-love transition-colors hover:bg-rp-love/20" onclick="promptDeleteSession(event, ${inlineString(sessionId)})">
             <span class="material-symbols-outlined text-[16px]">delete</span> Delete session
           </button>
         </div>
@@ -1144,7 +1149,7 @@ function renderCaptureList(captures, sessionId) {
   }
 
   const items = filtered.map(c => `
-    <div class="flex items-start gap-3 p-4 border-b border-border cursor-pointer hover:bg-muted/30 transition-colors group" onclick="viewCapture('${escHtml(sessionId)}', ${c.seq})">
+    <div class="flex items-start gap-3 p-4 border-b border-border cursor-pointer hover:bg-muted/30 transition-colors group" onclick="viewCapture(${inlineString(sessionId)}, ${c.seq})">
       <div class="shrink-0 font-mono text-[0.65rem] text-rp-muted pt-1 w-6 text-right">#${c.seq}</div>
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -1185,7 +1190,7 @@ function renderCaptureDetail(capture, sessionId) {
   rightPanel.innerHTML = `
     <div class="flex flex-col h-full overflow-hidden">
       <!-- Back header -->
-      <div class="flex items-center gap-2 p-3.5 border-b border-border cursor-pointer hover:bg-muted/30 transition-colors shrink-0 bg-card" onclick="selectSession('${escHtml(sessionId)}')">
+      <div class="flex items-center gap-2 p-3.5 border-b border-border cursor-pointer hover:bg-muted/30 transition-colors shrink-0 bg-card" onclick="selectSession(${inlineString(sessionId)})">
         <span class="material-symbols-outlined text-rp-subtle text-[18px]">arrow_back</span>
         <span class="text-[0.8rem] text-rp-subtle font-medium">Back to captures</span>
       </div>
@@ -1203,7 +1208,7 @@ function renderCaptureDetail(capture, sessionId) {
             <div class="text-[0.85rem] text-rp-text font-medium mb-1">${escHtml(capture.description || '(no description)')}</div>
             ${capture.child_session_id ? `<div class="text-[0.7rem] text-rp-muted font-mono mt-2">child: <span class="text-rp-foam bg-rp-foam/10 px-1.5 py-0.5 rounded">${escHtml(capture.child_session_id)}</span></div>` : ''}
           </div>
-          <button id="capture-delete-button" class="inline-flex items-center gap-1 rounded-lg border border-rp-love/30 bg-rp-love/10 px-3 py-1.5 text-[0.72rem] font-semibold text-rp-love transition-colors hover:bg-rp-love/20" onclick="promptDeleteCapture(event, '${escHtml(sessionId)}', ${capture.seq})">
+          <button id="capture-delete-button" class="inline-flex items-center gap-1 rounded-lg border border-rp-love/30 bg-rp-love/10 px-3 py-1.5 text-[0.72rem] font-semibold text-rp-love transition-colors hover:bg-rp-love/20" onclick="promptDeleteCapture(event, ${inlineString(sessionId)}, ${capture.seq})">
             <span class="material-symbols-outlined text-[16px]">delete</span> Delete output
           </button>
         </div>
@@ -1356,7 +1361,7 @@ function renderSearchResults(results, sessionId, query) {
   const cards = results.map(r => {
     const c = r.capture;
     return `
-      <div class="bg-card border border-border rounded-xl p-4 cursor-pointer hover:border-rp-pine/40 hover:bg-muted/10 transition-all mb-3 shadow-sm group" onclick="jumpToCapture('${escHtml(sessionId)}', ${c.seq})">
+      <div class="bg-card border border-border rounded-xl p-4 cursor-pointer hover:border-rp-pine/40 hover:bg-muted/10 transition-all mb-3 shadow-sm group" onclick="jumpToCapture(${inlineString(sessionId)}, ${c.seq})">
         <div class="flex items-center gap-2.5 mb-3 flex-wrap">
           <span class="font-mono text-[0.7rem] text-rp-muted bg-rp-muted/10 px-1.5 py-0.5 rounded">#${c.seq}</span>
           ${agentBadgeHtml(c.agent, true)}

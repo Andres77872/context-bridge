@@ -2,11 +2,19 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -24,22 +32,73 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+const (
+	maxConfigBodyBytes     = 8 << 10
+	maxWebSessions         = 500
+	maxWebCaptures         = 500
+	maxWebSearchResults    = 100
+	maxWebSearchMatches    = 2000
+	maxWebSearchCandidates = 500
+	maxWebContextLines     = 20
+	maxWebQueryBytes       = 1024
+	maxWebHeaderBytes      = 16 << 10
+	dashboardCSP           = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+)
+
+var errJSONContentType = errors.New("Content-Type must be application/json")
+
 type Server struct {
-	store      *store.Store
-	searchMode store.SearchMode
-	configPath string
-	mu         sync.RWMutex
-	mux        *http.ServeMux
+	store       *store.Store
+	searchMode  store.SearchMode
+	configPath  string
+	accessToken string
+	mu          sync.RWMutex
+	mux         *http.ServeMux
 }
 
 func New(st *store.Store, searchMode store.SearchMode, configPath string) *Server {
-	s := &Server{store: st, searchMode: searchMode, configPath: configPath, mux: http.NewServeMux()}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		panic(fmt.Sprintf("generate dashboard access token: %v", err))
+	}
+	s := &Server{
+		store: st, searchMode: searchMode, configPath: configPath,
+		accessToken: hex.EncodeToString(tokenBytes), mux: http.NewServeMux(),
+	}
 	s.routes()
 	return s
 }
 
 func (s *Server) Routes() http.Handler {
-	return s.mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		if !loopbackRequestHost(r.Host) {
+			writeError(w, http.StatusForbidden, fmt.Errorf("non-loopback Host rejected"))
+			return
+		}
+		if !sameOriginRequest(r) {
+			writeError(w, http.StatusForbidden, fmt.Errorf("cross-origin dashboard request rejected"))
+			return
+		}
+		if r.URL.Path == "/" && r.URL.Query().Has("token") {
+			if !secureTokenEqual(r.URL.Query().Get("token"), s.accessToken) {
+				writeError(w, http.StatusForbidden, fmt.Errorf("invalid dashboard access token"))
+				return
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name: "context_bridge_session", Value: s.accessToken, Path: "/",
+				HttpOnly: true, SameSite: http.SameSiteStrictMode,
+			})
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		cookie, err := r.Cookie("context_bridge_session")
+		if err != nil || !secureTokenEqual(cookie.Value, s.accessToken) {
+			writeError(w, http.StatusForbidden, fmt.Errorf("dashboard access token required"))
+			return
+		}
+		s.mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) routes() {
@@ -72,10 +131,35 @@ func (s *Server) routes() {
 	})
 }
 
-func cors(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+func sameOriginRequest(r *http.Request) bool {
+	rawOrigin := strings.TrimSpace(r.Header.Get("Origin"))
+	if rawOrigin == "" {
+		return true
+	}
+	origin, err := url.Parse(rawOrigin)
+	if err != nil || origin.Scheme != "http" || origin.Host == "" || origin.User != nil {
+		return false
+	}
+	if origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" {
+		return false
+	}
+	return loopbackRequestHost(origin.Host) && strings.EqualFold(origin.Host, r.Host)
+}
+
+func loopbackRequestHost(hostPort string) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(hostPort))
+	if err != nil || strings.TrimSpace(port) == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func secureTokenEqual(got, want string) bool {
+	return len(got) == len(want) && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 type configResponse struct {
@@ -114,22 +198,26 @@ func (s *Server) currentConfigResponse() configResponse {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	writeJSON(w, http.StatusOK, s.currentConfigResponse())
 }
 
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	if s.configPath == "" {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("config path is unavailable"))
 		return
 	}
 
 	var req config.Config
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid config payload: %w", err))
+	if err := decodeJSONBody(w, r, maxConfigBodyBytes, &req); err != nil {
+		var tooLarge *http.MaxBytesError
+		switch {
+		case errors.As(err, &tooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, errors.New("request body is too large"))
+		case errors.Is(err, errJSONContentType):
+			writeError(w, http.StatusUnsupportedMediaType, err)
+		default:
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid config payload: %w", err))
+		}
 		return
 	}
 	if err := req.Validate(); err != nil {
@@ -146,7 +234,6 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	stats, err := s.store.Stats()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -160,11 +247,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	limit := 50
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
+			limit = min(n, maxWebSessions)
 		}
 	}
 
@@ -201,14 +287,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("session id is required"))
 		return
 	}
 
-	exists, err := s.rootSessionExists(id)
+	exists, err := s.rootSessionExists(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -227,11 +312,10 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	id := r.PathValue("id")
 	agent := r.URL.Query().Get("agent")
 
-	captures, err := s.store.ListCaptures(id, agent)
+	captures, err := s.store.ListCapturesContext(r.Context(), id, agent, maxWebCaptures)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -271,7 +355,6 @@ func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteCapture(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	id := strings.TrimSpace(r.PathValue("id"))
 	seqStr := r.PathValue("seq")
 
@@ -281,7 +364,7 @@ func (s *Server) handleDeleteCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.store.GetCaptureBySeq(id, seq); err != nil {
+	if _, err := s.store.GetCaptureBySeqContext(r.Context(), id, seq); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, err)
 			return
@@ -299,7 +382,6 @@ func (s *Server) handleDeleteCapture(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	id := r.PathValue("id")
 	seqStr := r.PathValue("seq")
 
@@ -309,7 +391,7 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	capture, err := s.store.GetCaptureBySeq(id, seq)
+	capture, err := s.store.GetCaptureBySeqContext(r.Context(), id, seq)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, err)
@@ -350,13 +432,12 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	cors(w)
 	id := r.PathValue("id")
 	q := r.URL.Query().Get("q")
 	contextLines := 3
 	if v := r.URL.Query().Get("context"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			contextLines = n
+			contextLines = min(n, maxWebContextLines)
 		}
 	}
 
@@ -364,8 +445,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("q parameter is required"))
 		return
 	}
+	if len([]byte(q)) > maxWebQueryBytes {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("q parameter exceeds %d bytes", maxWebQueryBytes))
+		return
+	}
 
-	results, err := s.store.SearchWithMode(id, q, contextLines, s.currentSearchMode())
+	results, err := s.store.SearchWithModeContext(r.Context(), id, q, contextLines, s.currentSearchMode(), maxWebSearchResults, maxWebSearchMatches, maxWebSearchCandidates)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -413,31 +498,30 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-func (s *Server) rootSessionExists(id string) (bool, error) {
-	sessions, err := s.store.ListRootSessions(int(^uint(0) >> 1))
-	if err != nil {
-		return false, err
-	}
-	for _, session := range sessions {
-		if session.ID == id {
-			return true, nil
-		}
-	}
-	return false, nil
+func (s *Server) rootSessionExists(ctx context.Context, id string) (bool, error) {
+	return s.store.RootSessionExistsContext(ctx, id)
 }
 
 func Run(st *store.Store, addr, version string, searchMode store.SearchMode, configPath string, openBrowser bool) error {
+	if err := validateLoopbackAddr(addr); err != nil {
+		return err
+	}
 	srv := New(st, searchMode, configPath)
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    maxWebHeaderBytes,
 	}
 
-	fmt.Printf("Context Bridge dashboard → http://%s\n", addr)
+	accessURL := fmt.Sprintf("http://%s/?token=%s", addr, srv.accessToken)
+	fmt.Printf("Context Bridge dashboard → %s\n", accessURL)
 
 	if openBrowser {
-		if err := openURL("http://" + addr); err != nil {
+		if err := openURL(accessURL); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to open browser: %v\n", err)
 		}
 	}
@@ -462,6 +546,21 @@ func Run(st *store.Store, addr, version string, searchMode store.SearchMode, con
 	}
 }
 
+func validateLoopbackAddr(addr string) error {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("dashboard address must be a loopback host:port: %q", addr)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("refusing non-loopback dashboard address %q", addr)
+	}
+	return nil
+}
+
 func openURL(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -480,6 +579,7 @@ func openURL(url string) error {
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
+	setSecurityHeaders(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
@@ -487,4 +587,39 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"ok": false, "error": fmt.Sprintf("%v", err)})
+}
+
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	w.Header().Set("Content-Security-Policy", dashboardCSP)
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, target any) error {
+	contentType := strings.TrimSpace(r.Header.Get("Content-Type"))
+	if contentType == "" {
+		return errJSONContentType
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return errJSONContentType
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON object")
+		}
+		return err
+	}
+	return nil
 }

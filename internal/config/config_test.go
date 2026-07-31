@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,7 @@ func TestValidateRejectsInvalidMode(t *testing.T) {
 }
 
 func TestResolveConfigPathUsesEnvVar(t *testing.T) {
-	path := ResolveConfigPath(func(key string) (string, bool) {
+	path := mustResolveConfigPath(t, func(key string) (string, bool) {
 		if key == "CONTEXT_BRIDGE_CONFIG" {
 			return "/custom/path/config.json", true
 		}
@@ -44,7 +45,7 @@ func TestResolveConfigPathUsesEnvVar(t *testing.T) {
 }
 
 func TestResolveConfigPathUsesUserConfigDir(t *testing.T) {
-	path := ResolveConfigPath(func(string) (string, bool) { return "", false }, func() (string, error) {
+	path := mustResolveConfigPath(t, func(string) (string, bool) { return "", false }, func() (string, error) {
 		return "/home/user/.config", nil
 	})
 
@@ -55,7 +56,7 @@ func TestResolveConfigPathUsesUserConfigDir(t *testing.T) {
 }
 
 func TestResolveConfigDirUsesConfigPathOverrideDirectory(t *testing.T) {
-	dir := ResolveConfigDir(func(key string) (string, bool) {
+	dir := mustResolveConfigDir(t, func(key string) (string, bool) {
 		if key == "CONTEXT_BRIDGE_CONFIG" {
 			return "/custom/path/config.json", true
 		}
@@ -68,7 +69,7 @@ func TestResolveConfigDirUsesConfigPathOverrideDirectory(t *testing.T) {
 }
 
 func TestResolveConfigDirUsesUserConfigDir(t *testing.T) {
-	dir := ResolveConfigDir(func(string) (string, bool) { return "", false }, func() (string, error) {
+	dir := mustResolveConfigDir(t, func(string) (string, bool) { return "", false }, func() (string, error) {
 		return "/home/user/.config", nil
 	})
 
@@ -79,7 +80,7 @@ func TestResolveConfigDirUsesUserConfigDir(t *testing.T) {
 }
 
 func TestResolveDBPathUsesEnvVar(t *testing.T) {
-	path := ResolveDBPath(func(key string) (string, bool) {
+	path := mustResolveDBPath(t, func(key string) (string, bool) {
 		if key == "CONTEXT_BRIDGE_DB" {
 			return "/custom/data/store.db", true
 		}
@@ -92,7 +93,7 @@ func TestResolveDBPathUsesEnvVar(t *testing.T) {
 }
 
 func TestResolveDBPathUsesXDGDataHome(t *testing.T) {
-	path := ResolveDBPath(func(key string) (string, bool) {
+	path := mustResolveDBPath(t, func(key string) (string, bool) {
 		if key == "XDG_DATA_HOME" {
 			return "/xdg/data", true
 		}
@@ -105,18 +106,173 @@ func TestResolveDBPathUsesXDGDataHome(t *testing.T) {
 	}
 }
 
-func TestResolveDBPathFallsBackToLocalFileWhenHomeUnavailable(t *testing.T) {
-	path := ResolveDBPath(func(string) (string, bool) { return "", false }, func() (string, error) {
+func TestResolveDBPathFailsWhenHomeUnavailable(t *testing.T) {
+	path, err := ResolveDBPath(func(string) (string, bool) { return "", false }, func() (string, error) {
 		return "", os.ErrNotExist
 	})
+	if err == nil || path != "" {
+		t.Fatalf("expected missing home to fail closed, path=%q err=%v", path, err)
+	}
+}
 
-	if path != "context-bridge.db" {
-		t.Fatalf("expected fallback DB path %q, got %q", "context-bridge.db", path)
+func TestPathResolversTrimAndCanonicalizeAbsoluteValues(t *testing.T) {
+	root := t.TempDir()
+	configPath := mustResolveConfigPath(t, func(key string) (string, bool) {
+		if key == "CONTEXT_BRIDGE_CONFIG" {
+			return "  " + filepath.Join(root, "nested", "..", "config.json") + "  ", true
+		}
+		return "", false
+	}, nil)
+	if want := filepath.Join(root, "config.json"); configPath != want {
+		t.Fatalf("expected canonical config path %q, got %q", want, configPath)
+	}
+
+	dbPath := mustResolveDBPath(t, func(key string) (string, bool) {
+		if key == "XDG_DATA_HOME" {
+			return "  " + filepath.Join(root, "data", "..", "xdg-data") + "  ", true
+		}
+		return "", false
+	}, nil)
+	if want := filepath.Join(root, "xdg-data", "context-bridge", "store.db"); dbPath != want {
+		t.Fatalf("expected canonical DB path %q, got %q", want, dbPath)
+	}
+}
+
+func TestWhitespaceOnlyXDGValuesUseLinuxDefaults(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("XDG config defaults are a Linux contract")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "  \t  ")
+	t.Setenv("XDG_DATA_HOME", "  \t  ")
+	t.Setenv("CONTEXT_BRIDGE_CONFIG", "  ")
+	t.Setenv("CONTEXT_BRIDGE_DB", "  ")
+	t.Setenv("CONTEXT_BRIDGE_SOCKET", "  ")
+
+	configPath := mustResolveConfigPath(t, os.LookupEnv, os.UserConfigDir)
+	if want := filepath.Join(home, ".config", "context-bridge", "config.json"); configPath != want {
+		t.Fatalf("expected whitespace-only XDG_CONFIG_HOME to use %q, got %q", want, configPath)
+	}
+	socketPath := mustResolveSocketPath(t, os.LookupEnv, os.UserConfigDir)
+	if want := filepath.Join(home, ".config", "context-bridge", "bridge.sock"); socketPath != want {
+		t.Fatalf("expected whitespace-only XDG_CONFIG_HOME socket %q, got %q", want, socketPath)
+	}
+	dbPath := mustResolveDBPath(t, os.LookupEnv, os.UserHomeDir)
+	if want := filepath.Join(home, ".local", "share", "context-bridge", "store.db"); dbPath != want {
+		t.Fatalf("expected whitespace-only XDG_DATA_HOME to use %q, got %q", want, dbPath)
+	}
+}
+
+func TestPathResolversRejectRelativeInputs(t *testing.T) {
+	noEnv := func(string) (string, bool) { return "", false }
+	relativeConfigDir := func() (string, error) { return "relative-config", nil }
+	relativeHomeDir := func() (string, error) { return "relative-home", nil }
+	tests := []struct {
+		name    string
+		resolve func() (string, error)
+	}{
+		{
+			name: "config override",
+			resolve: func() (string, error) {
+				return ResolveConfigPath(func(key string) (string, bool) {
+					return "relative/config.json", key == "CONTEXT_BRIDGE_CONFIG"
+				}, nil, nil)
+			},
+		},
+		{
+			name: "database override",
+			resolve: func() (string, error) {
+				return ResolveDBPath(func(key string) (string, bool) {
+					return "relative/store.db", key == "CONTEXT_BRIDGE_DB"
+				}, nil)
+			},
+		},
+		{
+			name: "XDG data home",
+			resolve: func() (string, error) {
+				return ResolveDBPath(func(key string) (string, bool) {
+					return "relative-data", key == "XDG_DATA_HOME"
+				}, nil)
+			},
+		},
+		{
+			name: "socket override",
+			resolve: func() (string, error) {
+				return ResolveSocketPath(func(key string) (string, bool) {
+					return "relative.sock", key == "CONTEXT_BRIDGE_SOCKET"
+				}, nil, nil)
+			},
+		},
+		{name: "user config directory", resolve: func() (string, error) {
+			return ResolveConfigPath(noEnv, relativeConfigDir, nil)
+		}},
+		{name: "user home directory", resolve: func() (string, error) {
+			return ResolveDBPath(noEnv, relativeHomeDir)
+		}},
+	}
+	if runtime.GOOS == "linux" {
+		tests = append(tests, struct {
+			name    string
+			resolve func() (string, error)
+		}{
+			name: "XDG config home",
+			resolve: func() (string, error) {
+				return ResolveConfigPath(func(key string) (string, bool) {
+					return "relative-config", key == "XDG_CONFIG_HOME"
+				}, nil, nil)
+			},
+		})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, err := tt.resolve()
+			if err == nil || path != "" {
+				t.Fatalf("expected relative path to fail closed, path=%q err=%v", path, err)
+			}
+		})
+	}
+}
+
+func TestResolveSocketPathUsesPrivateConfigNamespace(t *testing.T) {
+	base := t.TempDir()
+	path := mustResolveSocketPath(t, func(string) (string, bool) { return "", false }, func() (string, error) {
+		return base, nil
+	})
+	if want := filepath.Join(base, "context-bridge", "bridge.sock"); path != want {
+		t.Fatalf("expected socket path %q, got %q", want, path)
+	}
+
+	override := filepath.Join(base, "custom.sock")
+	path = mustResolveSocketPath(t, func(key string) (string, bool) {
+		if key == "CONTEXT_BRIDGE_SOCKET" {
+			return override, true
+		}
+		return "", false
+	}, func() (string, error) { return base, nil })
+	if path != override {
+		t.Fatalf("expected socket override %q, got %q", override, path)
+	}
+}
+
+func TestResolveSocketPathIgnoresBlankOverride(t *testing.T) {
+	base := t.TempDir()
+	path := mustResolveSocketPath(t, func(key string) (string, bool) {
+		if key == "CONTEXT_BRIDGE_SOCKET" {
+			return "  \t", true
+		}
+		return "", false
+	}, func() (string, error) { return base, nil })
+
+	want := filepath.Join(base, "context-bridge", "bridge.sock")
+	if path != want {
+		t.Fatalf("expected blank socket override to resolve to %q, got %q", want, path)
 	}
 }
 
 func TestResolveDataDirUsesDBOverrideDirectory(t *testing.T) {
-	dir := ResolveDataDir(func(key string) (string, bool) {
+	dir := mustResolveDataDir(t, func(key string) (string, bool) {
 		if key == "CONTEXT_BRIDGE_DB" {
 			return "/custom/data/store.db", true
 		}
@@ -129,7 +285,7 @@ func TestResolveDataDirUsesDBOverrideDirectory(t *testing.T) {
 }
 
 func TestResolveDataDirUsesXDGDataHome(t *testing.T) {
-	dir := ResolveDataDir(func(key string) (string, bool) {
+	dir := mustResolveDataDir(t, func(key string) (string, bool) {
 		if key == "XDG_DATA_HOME" {
 			return "/xdg/data", true
 		}
@@ -143,7 +299,7 @@ func TestResolveDataDirUsesXDGDataHome(t *testing.T) {
 }
 
 func TestResolveDataDirFallsBackToUserHome(t *testing.T) {
-	dir := ResolveDataDir(func(string) (string, bool) { return "", false }, func() (string, error) {
+	dir := mustResolveDataDir(t, func(string) (string, bool) { return "", false }, func() (string, error) {
 		return "/home/user", nil
 	})
 
@@ -161,8 +317,8 @@ func TestResolveUninstallScopeUsesOnlyExplicitOverridePaths(t *testing.T) {
 	t.Setenv("CONTEXT_BRIDGE_CONFIG", filepath.Join(home, "override-config", "config.json"))
 	t.Setenv("CONTEXT_BRIDGE_DB", filepath.Join(home, "override-data", "store.db"))
 
-	gotConfigDir := ResolveConfigDir(os.LookupEnv, os.UserConfigDir)
-	gotDataDir := ResolveDataDir(os.LookupEnv, os.UserHomeDir)
+	gotConfigDir := mustResolveConfigDir(t, os.LookupEnv, os.UserConfigDir)
+	gotDataDir := mustResolveDataDir(t, os.LookupEnv, os.UserHomeDir)
 
 	wantConfigDir := filepath.Join(home, "override-config")
 	wantDataDir := filepath.Join(home, "override-data")
@@ -191,10 +347,13 @@ func TestResolveUninstallScopeUsesOnlyXDGOverridePaths(t *testing.T) {
 	t.Setenv("CONTEXT_BRIDGE_CONFIG", "")
 	t.Setenv("CONTEXT_BRIDGE_DB", "")
 
-	gotConfigDir := ResolveConfigDir(os.LookupEnv, os.UserConfigDir)
-	gotDataDir := ResolveDataDir(os.LookupEnv, os.UserHomeDir)
+	gotConfigDir := mustResolveConfigDir(t, os.LookupEnv, os.UserConfigDir)
+	gotDataDir := mustResolveDataDir(t, os.LookupEnv, os.UserHomeDir)
 
 	wantConfigDir := filepath.Join(home, "xdg-config-override", "context-bridge")
+	if runtime.GOOS == "darwin" {
+		wantConfigDir = filepath.Join(home, "Library", "Application Support", "context-bridge")
+	}
 	wantDataDir := filepath.Join(home, "xdg-data-override", "context-bridge")
 	defaultConfigDir := filepath.Join(home, ".config", "context-bridge")
 	defaultDataDir := filepath.Join(home, ".local", "share", "context-bridge")
@@ -633,4 +792,125 @@ func TestSaveConfigJSONFormatIsCorrect(t *testing.T) {
 	if rawJSON != expectedNorm {
 		t.Errorf("JSON format mismatch.\nExpected:\n%s\nGot:\n%s", expectedNorm, rawJSON)
 	}
+}
+
+func TestResolveDBLocationMarksDefaultDirectoryManaged(t *testing.T) {
+	home := t.TempDir()
+	location, err := ResolveDBLocation(func(string) (string, bool) { return "", false }, func() (string, error) {
+		return home, nil
+	})
+	if err != nil {
+		t.Fatalf("ResolveDBLocation: %v", err)
+	}
+	if want := filepath.Join(home, ".local", "share", "context-bridge", "store.db"); location.Path != want {
+		t.Fatalf("expected default database path %q, got %q", want, location.Path)
+	}
+	if !location.ManagedDirectory {
+		t.Fatal("expected default database directory to be managed")
+	}
+}
+
+func TestResolveDBLocationKeepsExplicitDirectoryCallerManaged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.db")
+	location, err := ResolveDBLocation(func(key string) (string, bool) {
+		if key == "CONTEXT_BRIDGE_DB" {
+			return path, true
+		}
+		return "", false
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResolveDBLocation: %v", err)
+	}
+	if location.Path != path {
+		t.Fatalf("expected explicit database path %q, got %q", path, location.Path)
+	}
+	if location.ManagedDirectory {
+		t.Fatal("expected explicit database directory to remain caller-managed")
+	}
+}
+
+func TestLoadConfigRejectsRelativePath(t *testing.T) {
+	if _, err := LoadConfig("config.json", false); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected relative path rejection, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsTrailingJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"search_mode":"regex"} {"search_mode":"fts5"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := LoadConfig(path, true); err == nil || !strings.Contains(err.Error(), "trailing JSON data") {
+		t.Fatalf("expected trailing JSON rejection, got %v", err)
+	}
+}
+
+func TestSaveConfigRejectsRelativePath(t *testing.T) {
+	if err := SaveConfig("config.json", DefaultConfig()); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected relative path rejection, got %v", err)
+	}
+}
+
+func TestSaveConfigRejectsSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	link := filepath.Join(dir, "config.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := SaveConfig(link, DefaultConfig()); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || string(content) != "unchanged" {
+		t.Fatalf("symlink target changed: content=%q err=%v", content, err)
+	}
+}
+
+func mustResolveConfigPath(t *testing.T, lookupEnv func(string) (string, bool), userConfigDir func() (string, error)) string {
+	t.Helper()
+	path, err := ResolveConfigPath(lookupEnv, userConfigDir, os.UserHomeDir)
+	if err != nil {
+		t.Fatalf("resolve config path: %v", err)
+	}
+	return path
+}
+
+func mustResolveConfigDir(t *testing.T, lookupEnv func(string) (string, bool), userConfigDir func() (string, error)) string {
+	t.Helper()
+	path, err := ResolveConfigDir(lookupEnv, userConfigDir, os.UserHomeDir)
+	if err != nil {
+		t.Fatalf("resolve config directory: %v", err)
+	}
+	return path
+}
+
+func mustResolveDBPath(t *testing.T, lookupEnv func(string) (string, bool), userHomeDir func() (string, error)) string {
+	t.Helper()
+	path, err := ResolveDBPath(lookupEnv, userHomeDir)
+	if err != nil {
+		t.Fatalf("resolve database path: %v", err)
+	}
+	return path
+}
+
+func mustResolveDataDir(t *testing.T, lookupEnv func(string) (string, bool), userHomeDir func() (string, error)) string {
+	t.Helper()
+	path, err := ResolveDataDir(lookupEnv, userHomeDir)
+	if err != nil {
+		t.Fatalf("resolve data directory: %v", err)
+	}
+	return path
+}
+
+func mustResolveSocketPath(t *testing.T, lookupEnv func(string) (string, bool), userConfigDir func() (string, error)) string {
+	t.Helper()
+	path, err := ResolveSocketPath(lookupEnv, userConfigDir, os.UserHomeDir)
+	if err != nil {
+		t.Fatalf("resolve socket path: %v", err)
+	}
+	return path
 }

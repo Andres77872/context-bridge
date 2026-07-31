@@ -1,0 +1,11 @@
+.idea
+/dist/
+
+# Built binary (repo root only; do not ignore cmd/context-bridge/)
+/context-bridge
+
+# Test and coverage artifacts
+coverage.out
+
+# TypeScript adapter dependencies (package.json + package-lock.json are tracked)
+plugin/node_modules/
